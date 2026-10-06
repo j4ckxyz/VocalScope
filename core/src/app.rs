@@ -750,8 +750,19 @@ mod tests {
         assert_eq!(peaks.len(), 800);
         assert!(peaks.chunks(2).all(|c| c[1] > 10_000 && c[0] < -10_000));
 
-        // The UI was told about the open and about the waveform becoming ready.
-        assert!(f.recorder.sessions.lock().unwrap().len() >= 2);
+        // The UI was told about the open and about the waveform becoming
+        // ready. The second notification is sent by the waveform thread just
+        // after the state changes, so give it a moment to arrive.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while f.recorder.sessions.lock().unwrap().len() < 2 {
+            assert!(
+                Instant::now() < deadline,
+                "the UI was never told the waveform was ready"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let last = f.recorder.sessions.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(last.recordings[0].waveform_status, WaveformStatus::Ready);
         let recents = f.app.recents();
         assert_eq!(recents.len(), 1);
         assert_eq!(recents[0].title, "take");

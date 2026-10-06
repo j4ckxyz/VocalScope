@@ -106,7 +106,11 @@ pub fn relative_path(path: &Path, base: &Path) -> Option<PathBuf> {
     // Always written with forward slashes, so a project saved on Windows
     // opens on macOS and the other way round.
     let mut parts: Vec<String> = vec!["..".to_string(); base.len() - common];
-    parts.extend(path[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    parts.extend(
+        path[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
     Some(PathBuf::from(parts.join("/")))
 }
 
@@ -301,11 +305,21 @@ mod tests {
 
     #[test]
     fn relative_paths_resolve_with_either_slash() {
-        let dir = Path::new(if cfg!(windows) { "C:\\projects\\study" } else { "/projects/study" });
+        let dir = Path::new(if cfg!(windows) {
+            "C:\\projects\\study"
+        } else {
+            "/projects/study"
+        });
         let expected = dir.join("audio").join("take.wav");
         assert_eq!(resolve_relative(dir, Path::new("audio/take.wav")), expected);
-        assert_eq!(resolve_relative(dir, Path::new("audio\\take.wav")), expected);
-        assert_eq!(resolve_relative(dir, Path::new("../study/audio/take.wav")), expected);
+        assert_eq!(
+            resolve_relative(dir, Path::new("audio\\take.wav")),
+            expected
+        );
+        assert_eq!(
+            resolve_relative(dir, Path::new("../study/audio/take.wav")),
+            expected
+        );
     }
 
     // Uses POSIX-style absolute paths, which are not absolute on Windows.
