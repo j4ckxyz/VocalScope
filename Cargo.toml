@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = ["core"]
+
+[workspace.package]
+# Single source of truth for the application version. Every platform app
+# reads it from the core at run time, and release tags must match it.
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+authors = ["VocalScope contributors"]
+
+# Unoptimised audio decoding is roughly ten times slower than real use, which
+# makes development builds misleading. Optimise the decode path even in dev.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package.symphonia-core]
+opt-level = 3
+[profile.dev.package.symphonia-bundle-mp3]
+opt-level = 3
+[profile.dev.package.symphonia-bundle-flac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-aac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-alac]
+opt-level = 3
+[profile.dev.package.symphonia-codec-vorbis]
+opt-level = 3
+[profile.dev.package.symphonia-codec-pcm]
+opt-level = 3
+[profile.dev.package.rodio]
+opt-level = 3
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+opt-level = 3
+strip = true

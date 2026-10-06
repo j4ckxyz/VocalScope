@@ -1,0 +1,188 @@
+<Window
+    x:Class="VocalScope.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="VocalScope">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid x:Name="Root" AllowDrop="True" DragOver="OnDragOver" Drop="OnDrop" KeyDown="OnKeyDown">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Title bar: the document name and its format, as a document window shows it. -->
+        <Grid x:Name="TitleBarArea" Height="40" Padding="14,0,0,0">
+            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                <Image x:Name="TitleIcon" Width="18" Height="18" />
+                <TextBlock x:Name="TitleText" Text="VocalScope" Style="{ThemeResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
+                <TextBlock x:Name="SubtitleText" Style="{ThemeResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" VerticalAlignment="Center" />
+            </StackPanel>
+        </Grid>
+
+        <!-- Menu, transport and view controls. -->
+        <Grid Grid.Row="1" Padding="4,0,12,6" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+
+            <MenuBar VerticalAlignment="Center">
+                <MenuBarItem Title="File">
+                    <MenuFlyoutItem Text="Open Audio…" Click="OnOpenAudio" KeyboardAcceleratorTextOverride="Ctrl+O" />
+                    <MenuFlyoutItem Text="Open Project…" Click="OnOpenProject" KeyboardAcceleratorTextOverride="Ctrl+Shift+O" />
+                    <MenuFlyoutSubItem x:Name="RecentMenu" Text="Open Recent" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="SaveItem" Text="Save Project" Click="OnSave" KeyboardAcceleratorTextOverride="Ctrl+S" />
+                    <MenuFlyoutItem x:Name="SaveAsItem" Text="Save Project As…" Click="OnSaveAs" KeyboardAcceleratorTextOverride="Ctrl+Shift+S" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="CloseItem" Text="Close Project" Click="OnCloseProject" KeyboardAcceleratorTextOverride="Ctrl+W" />
+                    <MenuFlyoutItem Text="Exit" Click="OnExit" KeyboardAcceleratorTextOverride="Alt+F4" />
+                </MenuBarItem>
+                <MenuBarItem x:Name="PlaybackMenu" Title="Playback">
+                    <MenuFlyoutItem Text="Play/Pause" Click="OnTogglePlay" KeyboardAcceleratorTextOverride="Space" />
+                    <MenuFlyoutItem Text="Stop" Click="OnStop" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="Return to Start" Click="OnToStart" KeyboardAcceleratorTextOverride="Home" />
+                    <MenuFlyoutItem Text="Skip Back 5 Seconds" Click="OnSkipBack" KeyboardAcceleratorTextOverride="Left" />
+                    <MenuFlyoutItem Text="Skip Forward 5 Seconds" Click="OnSkipForward" KeyboardAcceleratorTextOverride="Right" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="Mute/Unmute" Click="OnToggleMute" KeyboardAcceleratorTextOverride="M" />
+                </MenuBarItem>
+                <MenuBarItem x:Name="ViewMenu" Title="View">
+                    <MenuFlyoutItem Text="Zoom In" Click="OnZoomIn" KeyboardAcceleratorTextOverride="Ctrl++" />
+                    <MenuFlyoutItem Text="Zoom Out" Click="OnZoomOut" KeyboardAcceleratorTextOverride="Ctrl+-" />
+                    <MenuFlyoutItem Text="Zoom to Fit" Click="OnZoomFit" KeyboardAcceleratorTextOverride="Ctrl+0" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem Text="Show/Hide Details" Click="OnToggleInspector" KeyboardAcceleratorTextOverride="Ctrl+I" />
+                </MenuBarItem>
+                <MenuBarItem Title="Help">
+                    <MenuFlyoutItem Text="About VocalScope" Click="OnAbout" />
+                </MenuBarItem>
+            </MenuBar>
+
+            <StackPanel x:Name="TransportPanel" Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" Spacing="4" Visibility="Collapsed">
+                <Button Click="OnToStart" ToolTipService.ToolTip="Return to start (Home)" AutomationProperties.Name="Return to start">
+                    <FontIcon Glyph="&#xE892;" FontSize="14" />
+                </Button>
+                <Button Click="OnTogglePlay" Style="{ThemeResource AccentButtonStyle}" ToolTipService.ToolTip="Play or pause (Space)" AutomationProperties.Name="Play or pause">
+                    <FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="14" />
+                </Button>
+                <Button Click="OnStop" ToolTipService.ToolTip="Stop" AutomationProperties.Name="Stop">
+                    <FontIcon Glyph="&#xE71A;" FontSize="14" />
+                </Button>
+                <TextBlock x:Name="TimeText" Margin="12,0,0,0" VerticalAlignment="Center" FontFamily="Cascadia Mono, Consolas" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                <TextBlock x:Name="DurationText" VerticalAlignment="Center" FontFamily="Cascadia Mono, Consolas" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+            </StackPanel>
+
+            <StackPanel x:Name="ViewPanel" Grid.Column="2" Orientation="Horizontal" Spacing="4" Visibility="Collapsed">
+                <Button Click="OnZoomOut" ToolTipService.ToolTip="Zoom out (Ctrl+-)" AutomationProperties.Name="Zoom out">
+                    <FontIcon Glyph="&#xE71F;" FontSize="14" />
+                </Button>
+                <Button Click="OnZoomIn" ToolTipService.ToolTip="Zoom in (Ctrl++)" AutomationProperties.Name="Zoom in">
+                    <FontIcon Glyph="&#xE8A3;" FontSize="14" />
+                </Button>
+                <Button Click="OnZoomFit" ToolTipService.ToolTip="Zoom to fit (Ctrl+0)" AutomationProperties.Name="Zoom to fit">
+                    <FontIcon Glyph="&#xE9A6;" FontSize="14" />
+                </Button>
+                <Button Click="OnToggleMute" Margin="8,0,0,0" ToolTipService.ToolTip="Mute or unmute (M)" AutomationProperties.Name="Mute or unmute">
+                    <FontIcon x:Name="VolumeIcon" Glyph="&#xE767;" FontSize="14" />
+                </Button>
+                <Slider x:Name="VolumeSlider" Width="96" Minimum="0" Maximum="100" VerticalAlignment="Center" ValueChanged="OnVolumeChanged" AutomationProperties.Name="Volume" />
+                <Button Click="OnToggleInspector" Margin="8,0,0,0" ToolTipService.ToolTip="Show or hide details (Ctrl+I)" AutomationProperties.Name="Show or hide details">
+                    <FontIcon Glyph="&#xE946;" FontSize="14" />
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="2">
+            <!-- Start screen -->
+            <ScrollViewer x:Name="WelcomeView">
+                <StackPanel MaxWidth="640" Margin="40,32,40,24" Spacing="6">
+                    <TextBlock Text="VocalScope" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="Open a vocal recording or a full song to inspect it. Everything is processed on this PC; nothing is uploaded." />
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,16,0,0">
+                        <Button Content="Open Audio…" Click="OnOpenAudio" Style="{ThemeResource AccentButtonStyle}" />
+                        <Button Content="Open Project…" Click="OnOpenProject" />
+                        <TextBlock Text="or drop a file anywhere in this window" VerticalAlignment="Center" Margin="6,0,0,0"
+                                   Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                    </StackPanel>
+                    <TextBlock x:Name="RecentHeading" Text="Recent" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,24,0,2" Visibility="Collapsed" />
+                    <StackPanel x:Name="RecentsPanel" Spacing="2" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <!-- Document -->
+            <Grid x:Name="DocumentView" Visibility="Collapsed">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Grid x:Name="Timeline" Background="{ThemeResource LayerFillColorDefaultBrush}"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" SizeChanged="OnTimelineSizeChanged">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="44" />
+                        <RowDefinition Height="24" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+
+                    <Grid x:Name="OverviewArea" Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                          PointerPressed="OnOverviewPressed" PointerMoved="OnOverviewMoved" PointerReleased="OnOverviewReleased">
+                        <Image x:Name="OverviewImage" Stretch="Fill" />
+                        <Canvas>
+                            <Rectangle x:Name="ViewportRect" Height="44" Visibility="Collapsed" StrokeThickness="1"
+                                       Stroke="{ThemeResource AccentFillColorDefaultBrush}" Fill="{ThemeResource AccentFillColorDefaultBrush}" Opacity="0.25" />
+                            <Rectangle x:Name="OverviewPlayhead" Width="1" Height="44" Visibility="Collapsed" Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </Canvas>
+                    </Grid>
+
+                    <Canvas x:Name="RulerCanvas" Grid.Row="1" />
+
+                    <Grid x:Name="WaveArea" Grid.Row="2" Background="Transparent"
+                          PointerPressed="OnWavePressed" PointerMoved="OnWaveMoved" PointerReleased="OnWaveReleased" PointerWheelChanged="OnWaveWheel">
+                        <Image x:Name="WaveImage" Stretch="Fill" />
+                        <Canvas>
+                            <Rectangle x:Name="Playhead" Width="2" Visibility="Collapsed" Fill="{ThemeResource AccentFillColorDefaultBrush}" />
+                        </Canvas>
+                        <StackPanel x:Name="StatusPanel" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10" MaxWidth="460" Visibility="Collapsed">
+                            <ProgressBar x:Name="ReadProgress" Width="220" />
+                            <TextBlock x:Name="StatusTitle" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            <TextBlock x:Name="StatusText" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Button x:Name="LocateButton" Content="Locate File…" HorizontalAlignment="Center" Click="OnLocate" Style="{ThemeResource AccentButtonStyle}" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+
+                <!-- Details: the user's label (editable) and the file's facts (as found). -->
+                <ScrollViewer x:Name="Inspector" Grid.Column="1" Width="300"
+                              BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,1,0,0">
+                    <StackPanel Padding="16,12,16,20" Spacing="10">
+                        <TextBlock Text="Label" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                        <TextBox x:Name="NameBox" Header="Name" LostFocus="OnLabelCommit" />
+                        <TextBox x:Name="VersionBox" Header="Version" PlaceholderText="e.g. Original release" LostFocus="OnLabelCommit" />
+                        <TextBox x:Name="YearBox" Header="Release year" MaxLength="4" LostFocus="OnLabelCommit" />
+                        <ComboBox x:Name="KindBox" Header="This audio is" HorizontalAlignment="Stretch" SelectionChanged="OnKindChanged">
+                            <ComboBoxItem Content="Not specified" />
+                            <ComboBoxItem Content="Full mix" />
+                            <ComboBoxItem Content="Vocal stem" />
+                        </ComboBox>
+                        <TextBox x:Name="NotesBox" Header="Notes" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" LostFocus="OnLabelCommit" />
+                        <TextBlock Text="File" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
+                        <Grid x:Name="FactsGrid" ColumnSpacing="12" RowSpacing="6">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                        </Grid>
+                    </StackPanel>
+                </ScrollViewer>
+            </Grid>
+        </Grid>
+    </Grid>
+</Window>

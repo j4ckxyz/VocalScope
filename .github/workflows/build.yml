@@ -1,0 +1,132 @@
+name: Build
+
+# Every push: test the shared core on both platforms and build both apps.
+# Pushing a tag such as v0.1.0 additionally publishes a GitHub Release with
+# the two downloads attached.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: Core tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  macos-app:
+    name: macOS app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build VocalScope.app
+        run: apps/macos/build.sh
+      - name: Package
+        run: ditto -c -k --keepParent apps/macos/build/VocalScope.app VocalScope-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VocalScope-macos-arm64
+          path: VocalScope-macos-arm64.zip
+
+  windows-app:
+    name: Windows app
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build core
+        run: cargo build --release -p vocalscope-core
+
+      # The C# bindings are generated from the compiled core, so the Windows
+      # app always matches the Rust source it ships with.
+      - name: Cache binding generator
+        id: bindgen
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/uniffi-bindgen-cs.exe
+          key: uniffi-bindgen-cs-v0.11.0-v0.31.0-${{ runner.os }}
+      - name: Install binding generator
+        if: steps.bindgen.outputs.cache-hit != 'true'
+        run: cargo install uniffi-bindgen-cs --git https://github.com/NordSecurity/uniffi-bindgen-cs --tag v0.11.0+v0.31.0
+      - name: Generate C# bindings
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force apps/windows/Generated, apps/windows/native | Out-Null
+          uniffi-bindgen-cs --library target/release/vocalscope_core.dll --no-format -o apps/windows/Generated
+          Copy-Item target/release/vocalscope_core.dll apps/windows/native/
+
+      - name: Build app
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          dotnet publish apps/windows/VocalScope.csproj -c Release -r win-x64 -p:Platform=x64 -p:Version=$version -o publish/VocalScope
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path publish/VocalScope -DestinationPath VocalScope-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VocalScope-windows-x64
+          path: VocalScope-windows-x64.zip
+
+      # Runs the freshly built app on the runner's desktop and photographs
+      # it: proof that it starts and opens a file, and the source of the
+      # Windows screenshots in the README.
+      - name: Run the app and take screenshots
+        shell: pwsh
+        run: scripts/windows-screenshots.ps1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-screenshots
+          path: screenshots/
+          if-no-files-found: ignore
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [core, macos-app, windows-app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that the tag matches the version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: VocalScope-*
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd dist
+          sha256sum *.zip > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" *.zip SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "VocalScope ${GITHUB_REF_NAME#v}" \
+            --notes "Downloads for macOS (Apple silicon) and Windows (64-bit) are below. See the [README](https://github.com/$GITHUB_REPOSITORY#install) for how to install and open them: neither build is signed yet, so each system asks for confirmation the first time."

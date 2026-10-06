@@ -1,0 +1,43 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.DS_Store
+*.log
+*.tmp
+
+# Python (analysis worker, from v0.2.0)
+__pycache__/
+.venv/
+*.pyc
+
+# Local test audio is never committed
+/test-audio/
+*.mp3
+*.wav
+*.flac
+*.m4a
+*.ogg
+
+# Rust
+/target/
+
+# macOS app: build output and generated bindings
+/apps/macos/.build/
+/apps/macos/.corelib/
+/apps/macos/.generated/
+/apps/macos/build/
+/apps/macos/Sources/VocalScopeCore/vocalscope_core.swift
+/apps/macos/Sources/vocalscope_coreFFI/include/vocalscope_coreFFI.h
+/bench-results/
+
+# Windows app: build output and generated inputs
+/apps/windows/bin/
+/apps/windows/obj/
+/apps/windows/Generated/
+/apps/windows/native/
+/publish/
+/screenshots/
+
+# The original planning brief; superseded by README and docs/ARCHITECTURE.md
+/project-spec.md

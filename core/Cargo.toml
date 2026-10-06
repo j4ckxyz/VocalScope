@@ -1,0 +1,48 @@
+[package]
+name = "vocalscope-core"
+description = "Shared core of VocalScope: audio, analysis, projects and storage. Each platform's native UI sits on top of this library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[lib]
+name = "vocalscope_core"
+# `staticlib` is linked into the macOS app, `cdylib` is loaded by the Windows
+# app and by the binding generator, `lib` is for tests and Rust consumers.
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# Builds the Swift binding generator. Not needed by the library itself.
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+# Pinned to the newest release that the C# binding generator
+# (uniffi-bindgen-cs) also supports, so both platforms use one definition.
+uniffi = "0.31"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+log = { version = "0.4", features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+rodio = { version = "0.22", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
+# Kept on the same major line as rodio's own symphonia dependency so only one
+# copy of the decoders is compiled into the application.
+symphonia = { version = "0.5", default-features = false, features = [
+    "aac", "aiff", "alac", "flac", "isomp4", "mp3", "ogg", "pcm", "vorbis", "wav",
+    "opt-simd",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+hound = "3.5"

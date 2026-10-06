@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The Windows app: a native WinUI 3 front end over the shared Rust core.
+    It is unpackaged and self-contained, so the published folder runs on any
+    64-bit Windows 10 (1809+) or 11 machine with nothing else installed.
+
+    Two inputs are produced by the build pipeline (see .github/workflows):
+      Generated\vocalscope_core.cs   C# bindings generated from the core
+      native\vocalscope_core.dll     the core itself
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>VocalScope</RootNamespace>
+    <AssemblyName>VocalScope</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\app-icon.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.6.*" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="native\vocalscope_core.dll" Link="vocalscope_core.dll" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\assets\app-icon.ico" Link="app-icon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>
