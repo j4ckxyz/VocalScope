@@ -6,7 +6,7 @@ cross-platform UI toolkit.
 
 ```
 ┌──────────────────────────┐   ┌──────────────────────────┐
-│ macOS app                │   │ Windows app (planned)    │
+│ macOS app                │   │ Windows app              │
 │ Swift · SwiftUI + AppKit │   │ C# · WinUI 3             │
 └────────────┬─────────────┘   └────────────┬─────────────┘
              │  generated Swift bindings     │  generated C# bindings
@@ -26,7 +26,7 @@ is why it carried over unchanged.
 
 The rule that keeps technical debt low: **if it is not drawing or a platform
 convention, it belongs in the core.** A second platform should cost a UI, not
-a second implementation. Concretely, the core owns:
+a second implementation. (The Windows app is about 1,300 lines of C# and XAML.) Concretely, the core owns:
 
 - decoding and playback (`audio/`)
 - waveform summarisation and its on-disk cache (`audio/peaks.rs`)
@@ -110,7 +110,21 @@ Research so far (to be re-checked when each feature starts):
 ```
 core/                  shared Rust core (library + binding generator)
 apps/macos/            SwiftUI/AppKit app, build.sh, Info.plist
-scripts/               test-audio generator, benchmarks
-docs/                  this file, PERFORMANCE.md
+apps/windows/          WinUI 3 app (C#)
+scripts/               test-audio generator, benchmarks, CI screenshot script
+docs/                  this file, PERFORMANCE.md, images
 assets/                icon sources
+.github/workflows/     tests, both app builds, releases
 ```
+
+## How each app is checked
+
+Neither UI has automated UI tests yet. What exists:
+
+- The core's unit tests run on macOS and Windows for every push.
+- Both apps are built for every push.
+- The Windows app is then started on the build server's desktop, once with
+  a file and once without, and photographed (`scripts/windows-screenshots.ps1`).
+  The job fails if the app does not stay running, so a build that cannot
+  start or cannot load the core never reaches a release. Those photographs
+  are the Windows screenshots in the README.

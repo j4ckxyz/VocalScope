@@ -551,11 +551,14 @@ public sealed partial class MainWindow : Window
 
     private void ShowTime(PlaybackStatus status)
     {
-        var text = FormatTime(status.PositionSeconds, 3);
+        var position = FormatTime(status.PositionSeconds, 3);
+        var total = "/ " + FormatTime(status.DurationSeconds ?? duration, 3);
+        // Called every frame during playback; only touch the text when it changes.
+        var text = position + total;
         if (text == lastTimeText) return;
         lastTimeText = text;
-        TimeText.Text = text;
-        DurationText.Text = "/ " + FormatTime(status.DurationSeconds ?? duration, 3);
+        TimeText.Text = position;
+        DurationText.Text = total;
     }
 
     private void OnFrame(object? sender, object e)
