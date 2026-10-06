@@ -103,6 +103,8 @@ same file opens instantly.
 
 ![A recording with its pitch analysis on macOS](docs/images/macos-main.png)
 
+![A recording with its pitch on Windows](docs/images/windows-main.png)
+
 The window has four parts:
 
 - **Overview** (the thin strip at the top): the whole recording. When you
@@ -331,14 +333,16 @@ further along:
 | Choose audio output device | Yes | Not yet (uses the default) |
 | Hover read-out of the time and pitch under the pointer | Yes | Not yet |
 | Click a differing passage to go to it | Yes | Yes |
-| Tested by hand | Launched and photographed with recordings open; controls not clicked through | Not yet run with the analysis features |
+| Tested by hand | Launched and photographed with recordings open; controls not clicked through | Launched and photographed with a recording open, on a build server; controls not clicked through |
 
 That last row matters. All of the analysis lives in the shared core and is
 covered by its tests, including one that downloads a real model and isolates
 with it. The interfaces are another matter: the macOS app has been launched
 and photographed showing an analysis and a comparison, but its buttons,
-menus and dialogs have not been clicked through; the Windows app's new
-screens have been checked by the compiler only, and nobody has used them.
+menus and dialogs have not been clicked through; the Windows app is built,
+launched and photographed showing a pitch analysis on a build server for
+every change, but nobody has used it on a real PC, and its isolation,
+comparison and export screens have never been opened.
 Please [report problems](https://github.com/j4ckxyz/VocalScope/issues).
 
 ## Roadmap
