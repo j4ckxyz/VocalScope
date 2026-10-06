@@ -59,7 +59,7 @@ function Capture($name, $arguments) {
     }
     $width = $rect.Right - $rect.Left
     $height = $rect.Bottom - $rect.Top
-    Write-Host "$name: window $width x $height at $($rect.Left),$($rect.Top)"
+    Write-Host "${name}: window $width x $height at $($rect.Left),$($rect.Top)"
     if ($width -le 0 -or $height -le 0) { throw "VocalScope has no visible window." }
     Save-Region (Join-Path $out "$name.png") $rect.Left $rect.Top $width $height
 
