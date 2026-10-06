@@ -1,7 +1,7 @@
 name: Build
 
 # Every push: test the shared core on both platforms and build both apps.
-# Pushing a tag such as v0.1.0 additionally publishes a GitHub Release with
+# Pushing a tag such as v0.6.0 additionally publishes a GitHub Release with
 # the two downloads attached.
 on:
   push:

@@ -80,3 +80,70 @@ extension MemoryPressure {
 }
 
 extension RecentItem: Identifiable {}
+extension SeparationModel: Identifiable {}
+
+/// The pages of the inspector.
+enum InspectorTab: String, CaseIterable {
+    case details, analysis, compare
+
+    var label: String {
+        switch self {
+        case .details: return "Details"
+        case .analysis: return "Analysis"
+        case .compare: return "Compare"
+        }
+    }
+}
+
+extension Format {
+    /// A distance in cents with its sign, e.g. "+12 cents".
+    static func cents(_ value: Float?, digits: Int = 0) -> String {
+        guard let value, value.isFinite else { return unknown }
+        let rounded = Double(value)
+        let text = rounded.formatted(.number.precision(.fractionLength(digits)).sign(strategy: .always(includingZero: false)))
+        return "\(text) cents"
+    }
+
+    static func hertz(_ value: Float?) -> String {
+        guard let value, value.isFinite else { return unknown }
+        return "\(Double(value).formatted(.number.precision(.fractionLength(1)))) Hz"
+    }
+
+    static func percent(_ fraction: Float?) -> String {
+        guard let fraction, fraction.isFinite else { return unknown }
+        return Double(fraction).formatted(.percent.precision(.fractionLength(0)))
+    }
+}
+
+extension Assessment {
+    var label: String {
+        switch self {
+        case .notEnoughData: return "Not enough data"
+        case .typicalOfUnprocessed: return "Typical of unprocessed singing"
+        case .inconclusive: return "Inconclusive"
+        case .consistentWithCorrection: return "Consistent with pitch correction"
+        }
+    }
+}
+
+extension AlignmentQuality {
+    var label: String {
+        switch self {
+        case .good: return "Lined up"
+        case .uncertain: return "Probably lined up — check by ear"
+        case .poor: return "No convincing match"
+        }
+    }
+}
+
+extension IsolationStage {
+    var label: String {
+        switch self {
+        case .idle: return ""
+        case .downloading: return "Downloading the model…"
+        case .preparing: return "Loading the model…"
+        case .isolating: return "Isolating vocals…"
+        case .failed: return "Isolation failed"
+        }
+    }
+}

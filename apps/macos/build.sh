@@ -24,6 +24,24 @@ JOBS="${VOCALSCOPE_BUILD_JOBS:-4}"
 # core (SQLite) are built for a newer macOS than the app claims to support.
 export MACOSX_DEPLOYMENT_TARGET=14.0
 
+# From the macOS 27 SDK on, SwiftUI's property wrappers are compiler macros
+# whose plug-in ships with full Xcode but not with the Command Line Tools.
+# With only the tools installed, build against the newest earlier SDK they
+# include; the app runs on the same systems either way.
+if [[ -z "${SDKROOT:-}" ]]; then
+  DEVELOPER="$(xcode-select -p 2>/dev/null || true)"
+  if [[ "$DEVELOPER" == */CommandLineTools && ! -e "$DEVELOPER/usr/lib/swift/host/plugins/libSwiftUIMacros.dylib" ]]; then
+    SDK_MAJOR="$(xcrun --show-sdk-version 2>/dev/null | cut -d. -f1)"
+    if [[ "${SDK_MAJOR:-0}" -ge 27 ]]; then
+      OLDER_SDK="$(ls -d "$DEVELOPER"/SDKs/MacOSX2[0-6].*.sdk 2>/dev/null | sort -V | tail -1)"
+      if [[ -n "$OLDER_SDK" ]]; then
+        echo "==> Using $(basename "$OLDER_SDK") (the default SDK needs full Xcode)"
+        export SDKROOT="$OLDER_SDK"
+      fi
+    fi
+  fi
+fi
+
 cd "$ROOT"
 echo "==> Building core ($PROFILE)"
 cargo build -p vocalscope-core -j "$JOBS" ${CARGO_FLAGS[@]+"${CARGO_FLAGS[@]}"}

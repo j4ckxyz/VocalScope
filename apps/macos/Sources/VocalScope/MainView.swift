@@ -129,6 +129,15 @@ private struct MainToolbar: ToolbarContent {
     @ToolbarContentBuilder
     private var documentControls: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
+            if model.session.comparison != nil {
+                RecordingSwitch()
+            }
+
+            Toggle(isOn: $model.pitchShown) {
+                Label("Pitch", systemImage: "waveform.path.ecg")
+            }
+            .help(model.pitchShown ? "Hide the pitch curve (⌥⌘P)" : "Show the pitch curve (⌥⌘P)")
+
             ControlGroup {
                 Button { model.timeline?.zoom(by: 1 / 1.6) } label: {
                     Label("Zoom Out", systemImage: "minus.magnifyingglass")
@@ -176,6 +185,26 @@ private struct TimeReadout: View {
     }
 }
 
+/// Chooses which of two compared recordings is shown and heard.
+private struct RecordingSwitch: View {
+    @EnvironmentObject private var model: AppModel
+
+    var body: some View {
+        Picker("Recording", selection: Binding(
+            get: { model.session.activeRecordingId ?? "" },
+            set: { model.setActiveRecording($0) })
+        ) {
+            ForEach(model.session.recordings, id: \.recordingId) { runtime in
+                Text(model.letter(for: runtime.recordingId))
+                    .tag(runtime.recordingId)
+                    .help(runtime.displayTitle)
+            }
+        }
+        .pickerStyle(.segmented)
+        .help("Switch between the two recordings at the matching moment (X)")
+    }
+}
+
 private struct VolumeControl: View {
     @EnvironmentObject private var model: AppModel
 
@@ -217,11 +246,16 @@ private struct DocumentView: View {
                 recordingId: recording.id,
                 duration: model.duration,
                 ready: runtime.waveformStatus == .ready,
+                pitch: model.pitchLayer,
                 playback: model.playback
             )
             .overlay { statusOverlay }
+            .overlay(alignment: .bottomTrailing) { analysisBadge }
             .onChange(of: runtime.waveformStatus, initial: true) { _, status in
-                if status == .ready { Launch.mark("waveform", final: true) }
+                if status == .ready { Launch.mark("waveform") }
+            }
+            .onChange(of: runtime.analysisStatus, initial: true) { _, status in
+                if status == .ready || status == .failed { Launch.mark("analysis", final: true) }
             }
         } else {
             ContentUnavailableView {
@@ -235,6 +269,31 @@ private struct DocumentView: View {
                 Button("Locate File…") { model.locateActiveRecording() }
                     .buttonStyle(.borderedProminent)
             }
+        }
+    }
+
+    /// A quiet note while background work that changes the timeline runs.
+    @ViewBuilder
+    private var analysisBadge: some View {
+        let analysing = runtime.waveformStatus == .ready && runtime.analysisStatus == .pending && model.pitchShown
+        let isolating = model.isolationIsRunning && model.isolation.recordingId == recording.id
+        if analysing || isolating {
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text(isolating ? model.isolation.stage.label : "Analysing pitch…")
+                    .font(.callout)
+                if isolating, let fraction = model.isolation.fraction {
+                    Text(Format.percent(fraction))
+                        .font(.callout)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: Capsule())
+            .padding(10)
+            .accessibilityElement(children: .combine)
         }
     }
 

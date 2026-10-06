@@ -13,8 +13,10 @@
 //!         └── label    (what the user says this recording is)
 //! ```
 //!
-//! Separation results, analyses and comparisons attach to this tree in later
-//! format versions; see `docs/ARCHITECTURE.md`.
+//! A project holds one recording, or two when versions are being compared
+//! (the first is the reference). Analyses and isolated vocals are not stored
+//! here: they are derived from the audio, cached by the application, and
+//! made again when missing, which is what keeps a project file tiny.
 
 pub mod io;
 
@@ -56,7 +58,22 @@ pub struct Recording {
     pub waveform: Option<WaveformSummary>,
     #[serde(default)]
     pub label: RecordingLabel,
+    /// Which audio the pitch analysis listens to.
+    #[serde(default)]
+    pub analysis_source: AnalysisSource,
     pub added_at: Timestamp,
+}
+
+/// What the pitch analysis is run on.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, uniffi::Enum)]
+#[serde(rename_all = "snake_case")]
+pub enum AnalysisSource {
+    /// The vocals VocalScope isolated from this recording, once that has
+    /// been done; the recording itself until then.
+    #[default]
+    IsolatedVocalsWhenAvailable,
+    /// Always the recording as it is.
+    Original,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, uniffi::Record)]
@@ -143,6 +160,7 @@ impl Recording {
             audio,
             waveform: None,
             label: RecordingLabel::default(),
+            analysis_source: AnalysisSource::default(),
             added_at: Utc::now(),
         }
     }

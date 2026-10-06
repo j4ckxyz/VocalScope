@@ -134,6 +134,34 @@ impl Peaks {
         out
     }
 
+    /// Loudest absolute sample value (0–1) in each `step_seconds` of the
+    /// recording: a coarse loudness curve, used to line two recordings up.
+    pub fn envelope(&self, step_seconds: f64) -> Vec<f32> {
+        let Some(base) = self.levels.first() else {
+            return Vec::new();
+        };
+        let buckets_per_step =
+            step_seconds * self.sample_rate_hz as f64 / BASE_FRAMES_PER_BUCKET as f64;
+        if !(buckets_per_step > 0.0) {
+            return Vec::new();
+        }
+        let steps = (base.len() as f64 / buckets_per_step).ceil() as usize;
+        (0..steps)
+            .map(|i| {
+                let from = (i as f64 * buckets_per_step) as usize;
+                let to = (((i + 1) as f64 * buckets_per_step).ceil() as usize)
+                    .max(from + 1)
+                    .min(base.len());
+                base[from.min(to - 1)..to]
+                    .iter()
+                    .map(|bucket| bucket[0].unsigned_abs().max(bucket[1].unsigned_abs()))
+                    .max()
+                    .unwrap_or(0) as f32
+                    / i16::MAX as f32
+            })
+            .collect()
+    }
+
     /// Writes the base level to a compact cache file. Coarser levels are
     /// rebuilt on load.
     pub fn save(&self, path: &Path) -> AppResult<()> {

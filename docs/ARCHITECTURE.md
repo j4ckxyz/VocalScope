@@ -26,10 +26,16 @@ is why it carried over unchanged.
 
 The rule that keeps technical debt low: **if it is not drawing or a platform
 convention, it belongs in the core.** A second platform should cost a UI, not
-a second implementation. (The Windows app is about 1,300 lines of C# and XAML.) Concretely, the core owns:
+a second implementation. (The Windows app is about 2,400 lines of C# and
+XAML.) Concretely, the core owns:
 
 - decoding and playback (`audio/`)
 - waveform summarisation and its on-disk cache (`audio/peaks.rs`)
+- pitch tracking, note finding, the correction indicators, and aligning and
+  comparing two recordings (`analysis/`)
+- vocal isolation: the model registry, verified downloads, resampling, the
+  spectrogram transform and running the model (`separation/`)
+- export to JSON, CSV, MIDI and a Markdown report (`export/`)
 - the project format (`project/`) and the open-document state (`session.rs`)
 - settings and recent files in SQLite (`db/`)
 - hardware detection (`hardware.rs`) and logging (`logging.rs`)
@@ -50,7 +56,12 @@ conventions, drawing, and where files live on that platform.
   for its waveform) runs on the core's own threads.
 - State flows one way: the UI calls a method; the core changes state and
   calls the observer with a complete snapshot (`SessionView`,
-  `PlaybackStatus`, ...). UIs render snapshots and keep no copy of the logic.
+  `PlaybackStatus`, `IsolationStatus`, ...). UIs render snapshots and keep
+  no copy of the logic.
+- Bulky results are pulled, not pushed. A snapshot says a recording's
+  analysis is ready; the UI then asks for `analysis()` once, and for
+  `pitch_curve()` each time the visible range changes. The curve comes back
+  already reduced to about one value per pixel, like the waveform.
 - Observer callbacks can arrive on any thread; the UI hops to its main thread.
 - The steady advance of the playback position is *not* pushed. UIs read
   `playback_status()` from their display-refresh callback, which costs far
@@ -85,25 +96,71 @@ SQLite holds only settings and the recent list.
 **The version number lives in one place:** `[workspace.package] version` in
 the root `Cargo.toml`. Apps read it from the core.
 
-## Planned: analysis and separation
+## Analysis and separation
 
-Pitch tracking and vocal separation will run in a Python worker process that
-the core starts and talks to over JSON lines on stdin/stdout — no local
-server. The core decodes audio and hands the worker PCM, so the worker needs
-no decoder of its own. The Python environment is created on first use, with
-the download size shown and consent asked first.
+An earlier plan put pitch tracking and vocal separation in a Python worker
+process. Both now run inside the core instead. That removed the hardest part
+of the plan — creating and maintaining a Python environment with a
+multi-gigabyte machine-learning stack on every user's computer — and it
+means the analysis is covered by the same `cargo test` as everything else.
 
-Research so far (to be re-checked when each feature starts):
+**Pitch tracking is the YIN difference function with a Viterbi pass**
+(`analysis/pitch.rs`). Every 10 ms frame keeps several candidate periods; a
+pass over the whole recording then picks the path that is both periodic and
+continuous, which removes the isolated octave jumps of a frame-by-frame
+tracker. Periods are refined at the recording's own sample rate. The reason
+for writing this rather than adopting a neural tracker is precision that can
+be stated: the tests hold steady tones from 65 Hz to 1.1 kHz to within half a
+cent, and the correction indicators are measurements of a few cents. A
+four-minute song is tracked in about 0.4 s.
 
-- Pitch: SwiftF0 (MIT, ONNX) and RMVPE lead an independent 19-tracker
-  benchmark; CREPE is well behind. SwiftF0's precision at the few-cent level
-  must be measured on synthetic tones before it is adopted.
-- Separation: `audio-separator` (MIT) runs the UVR-compatible model
-  families. Roformer models lead on quality but are heavy for 8 GB machines.
-- Licensing: some popular model weights (the viperx Roformer checkpoints)
-  have no stated license. Nothing will be bundled; models are downloaded on
-  request and every registry entry will state its license, including
-  "unstated".
+**Notes are found without reference to a scale** (`analysis/notes.rs`): a
+note is a stretch of voiced pitch that stays near its own centre. Only then
+is each centre compared with equal temperament, after estimating the
+recording's overall tuning, so "how close to the scale" is a measurement and
+not an assumption. Each note's vibrato and steady drift are fitted together
+and removed before its steadiness is measured.
+
+**The indicators** (`analysis/indicators.rs`) are four such measurements with
+thresholds. Every string they produce is written to describe, not to accuse,
+and a test checks that no report text claims proof. The thresholds are named
+constants at the top of that file. They are rules of thumb checked against
+synthetic material; calibrating them on real recordings is open work.
+
+**Vocal isolation runs MDX-Net models through ONNX Runtime**
+(`separation/`), linked statically into the core by the `ort` crate. The
+core decodes, resamples to 44.1 kHz stereo with its own polyphase filter,
+computes the spectrograms the models were trained on, runs the model on six
+seconds at a time and joins the results. It runs on the CPU: a little over
+three times real time for the large model on a fanless 8 GB laptop. Using the graphics
+processor (Core ML, DirectML) is possible with the same models and has not
+been tried.
+
+- No model is bundled. The registry (`separation/models.rs`) names three,
+  each with its download size, SHA-256, transform parameters and the licence
+  *as its publisher states it* — for two of the three that is "not stated",
+  and the app says so before downloading.
+- A model is downloaded only on request, to a temporary file, and moved into
+  place only if its size and checksum match.
+- The choice of model follows the hardware profile: the full-size models
+  need about 8 GB of memory and six cores to be comfortable.
+- Isolated vocals are kept as WAV files under the application's data folder,
+  keyed by the source file's path, size and modification time, and found
+  again whenever that audio is opened. They are not part of a project.
+
+**Comparison** (`analysis/compare.rs`) lines two recordings up from their
+loudness envelopes (taken from the waveform summaries, so nothing is decoded
+again). Short windows of one recording are each located in the other
+independently; windows of a true match agree on a straight line whose
+position is the offset and whose slope is the speed difference, and windows
+that landed somewhere by chance are outvoted. The pitch curves are then
+compared along that line. This is the right model for two releases of one
+performance; it deliberately does not attempt to warp one performance onto
+another.
+
+**Results are derived, cached and never stored in a project.** A pitch track
+is cached next to the waveform summary and everything else is recomputed
+from it in milliseconds.
 
 ## Repository layout
 
@@ -111,7 +168,7 @@ Research so far (to be re-checked when each feature starts):
 core/                  shared Rust core (library + binding generator)
 apps/macos/            SwiftUI/AppKit app, build.sh, Info.plist
 apps/windows/          WinUI 3 app (C#)
-scripts/               test-audio generator, benchmarks, CI screenshot script
+scripts/               test-audio generator, benchmarks, screenshot scripts
 docs/                  this file, PERFORMANCE.md, images
 assets/                icon sources
 .github/workflows/     tests, both app builds, releases
@@ -121,10 +178,16 @@ assets/                icon sources
 
 Neither UI has automated UI tests yet. What exists:
 
-- The core's unit tests run on macOS and Windows for every push.
+- The core's unit tests run on macOS and Windows for every push. They cover
+  the analysis end to end on synthetic recordings with known pitch, and the
+  isolation job with a stand-in for the model. One further test, run by
+  hand, downloads a real model and isolates with it.
 - Both apps are built for every push.
 - The Windows app is then started on the build server's desktop, once with
   a file and once without, and photographed (`scripts/windows-screenshots.ps1`).
   The job fails if the app does not stay running, so a build that cannot
   start or cannot load the core never reaches a release. Those photographs
   are the Windows screenshots in the README.
+- The macOS app can draw its own window into a picture
+  (`scripts/macos-screenshots.sh`), which is how the README's macOS
+  screenshots are made and a quick way to see a change without clicking.

@@ -4,6 +4,10 @@ use std::path::{Path, PathBuf};
 
 /// Total size the waveform cache is trimmed back to at startup.
 pub const WAVEFORM_CACHE_LIMIT_BYTES: u64 = 256 * 1024 * 1024;
+/// The same for cached pitch tracks, which are far smaller.
+pub const ANALYSIS_CACHE_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+/// And for isolated vocals: room for about a hundred songs.
+pub const STEM_STORE_LIMIT_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct AppPaths {
@@ -21,27 +25,92 @@ impl AppPaths {
         self.cache_dir.join("waveforms")
     }
 
+    pub fn analysis_cache_dir(&self) -> PathBuf {
+        self.cache_dir.join("analysis")
+    }
+
+    /// Downloaded vocal-isolation models.
+    pub fn models_dir(&self) -> PathBuf {
+        self.data_dir.join("models")
+    }
+
+    /// Isolated vocals. They take minutes to make, so they live with the
+    /// durable data rather than in the cache the system may empty.
+    pub fn stems_dir(&self) -> PathBuf {
+        self.data_dir.join("stems")
+    }
+
     /// Cache file for a source's waveform summary. The name is derived from
     /// the file's path, size and modification time, so an edited or replaced
     /// file never reuses a stale summary. `None` if the file cannot be read.
     pub fn waveform_cache_file(&self, source: &Path) -> Option<PathBuf> {
-        let metadata = std::fs::metadata(source).ok()?;
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_nanos());
-        let key = format!(
-            "{}\n{}\n{}",
-            source.to_string_lossy(),
-            metadata.len(),
-            modified
-        );
         Some(
             self.waveform_cache_dir()
-                .join(format!("{:016x}.vspk", fnv1a64(key.as_bytes()))),
+                .join(format!("{}.vspk", source_key(source)?)),
         )
     }
+
+    /// Cache file for a source's pitch track, named the same way.
+    pub fn analysis_cache_file(&self, source: &Path) -> Option<PathBuf> {
+        Some(
+            self.analysis_cache_dir()
+                .join(format!("{}.vspt", source_key(source)?)),
+        )
+    }
+
+    /// Where the vocals isolated from `source` by one model are kept.
+    pub fn stem_file(&self, source: &Path, model_id: &str) -> Option<PathBuf> {
+        Some(
+            self.stems_dir()
+                .join(format!("{}-{model_id}.wav", source_key(source)?)),
+        )
+    }
+
+    /// Every stem made from `source`, as (model id, file), newest first.
+    pub fn stems_for(&self, source: &Path) -> Vec<(String, PathBuf)> {
+        let Some(key) = source_key(source) else {
+            return Vec::new();
+        };
+        let prefix = format!("{key}-");
+        let Ok(entries) = std::fs::read_dir(self.stems_dir()) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(std::time::SystemTime, String, PathBuf)> = entries
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let model_id = name
+                    .strip_prefix(&prefix)?
+                    .strip_suffix(".wav")?
+                    .to_string();
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                Some((modified, model_id, entry.path()))
+            })
+            .collect();
+        found.sort_by(|a, b| b.0.cmp(&a.0));
+        found
+            .into_iter()
+            .map(|(_, model_id, path)| (model_id, path))
+            .collect()
+    }
+}
+
+/// Identifies one version of one file: its path, size and modification time,
+/// hashed. `None` if the file cannot be read.
+fn source_key(source: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(source).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    let key = format!(
+        "{}\n{}\n{}",
+        source.to_string_lossy(),
+        metadata.len(),
+        modified
+    );
+    Some(format!("{:016x}", fnv1a64(key.as_bytes())))
 }
 
 /// FNV-1a. Used only to name cache files; stable across builds and platforms,
@@ -120,6 +189,42 @@ mod tests {
 
         std::fs::write(&source, b"different length").unwrap();
         assert_ne!(paths.waveform_cache_file(&source).unwrap(), first);
+
+        // The pitch cache follows the same key in its own folder.
+        let analysis = paths.analysis_cache_file(&source).unwrap();
+        assert!(analysis.starts_with(paths.analysis_cache_dir()));
+        assert_eq!(analysis.extension().unwrap(), "vspt");
+    }
+
+    #[test]
+    fn stems_are_found_by_source_newest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let source = dir.path().join("song.flac");
+        assert!(paths.stems_for(&source).is_empty());
+        std::fs::write(&source, b"audio").unwrap();
+        assert!(paths.stems_for(&source).is_empty());
+
+        std::fs::create_dir_all(paths.stems_dir()).unwrap();
+        let now = std::time::SystemTime::now();
+        for (model, age) in [("older_model", 600), ("newer_model", 5)] {
+            let file = paths.stem_file(&source, model).unwrap();
+            std::fs::write(&file, b"stem").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(now - std::time::Duration::from_secs(age))
+                .unwrap();
+        }
+        // Another song's stem and a stray file are not this song's.
+        std::fs::write(paths.stems_dir().join("0000000000000000-m.wav"), b"x").unwrap();
+        std::fs::write(paths.stems_dir().join("notes.txt"), b"x").unwrap();
+
+        let found = paths.stems_for(&source);
+        let models: Vec<&str> = found.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(models, ["newer_model", "older_model"]);
+        assert_eq!(found[0].1, paths.stem_file(&source, "newer_model").unwrap());
     }
 
     #[test]

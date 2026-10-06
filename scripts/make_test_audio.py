@@ -9,8 +9,10 @@
 
 The audio is a sung-sounding tone (harmonics, vibrato, pitch glides between
 notes, breaths of noise between phrases) so waveforms look like real material
-and, from v0.2.0, pitch tracking has a known ground truth to be checked
-against. Nothing here is copyrighted, so the files can be shared freely.
+and pitch tracking has a known ground truth to be checked against. A
+one-minute pair, "natural" and "corrected", is for trying the correction
+indicators and the A/B comparison. Nothing here is copyrighted, so the files
+can be shared freely.
 
 WAV and MP3 are written directly; FLAC and M4A are produced with macOS
 `afconvert` when it is available.
@@ -37,8 +39,16 @@ def midi_to_hz(note: float) -> float:
     return 440.0 * 2.0 ** ((note - 69.0) / 12.0)
 
 
-def synth(seconds: float, seed: int = 1) -> np.ndarray:
-    """Returns float32 stereo samples in [-1, 1], shape (frames, 2)."""
+def synth(seconds: float, seed: int = 1, style: str = "plain") -> np.ndarray:
+    """Returns float32 stereo samples in [-1, 1], shape (frames, 2).
+
+    `style` chooses how the melody is sung:
+
+    * "plain"      exactly on the scale, with glides and vibrato (the default)
+    * "natural"    as a person might: each note a little off, wandering slightly
+    * "corrected"  as hard pitch correction leaves it: exactly on the scale,
+                   no vibrato, and jumping between notes instantly
+    """
     rng = np.random.default_rng(seed)
     frames = int(seconds * SAMPLE_RATE)
     t = np.arange(frames) / SAMPLE_RATE
@@ -57,14 +67,29 @@ def synth(seconds: float, seed: int = 1) -> np.ndarray:
         if not np.isnan(value):
             last = value
         filled[start : start + step] = last
-    glide = int(0.06 * SAMPLE_RATE)
-    kernel = np.hanning(glide * 2 + 1)
-    kernel /= kernel.sum()
-    pitch = np.convolve(filled, kernel, mode="same")
+    if style == "natural":
+        # Every note lands up to a quarter of a semitone off, and the voice
+        # wanders by a few cents while holding it.
+        detune_rng = np.random.default_rng(seed + 1000)
+        per_note = detune_rng.normal(0.0, 0.16, frames // step + 2).clip(-0.4, 0.4)
+        filled = filled + per_note[(t / NOTE_SECONDS).astype(int)]
+        wander = np.convolve(
+            detune_rng.standard_normal(frames // 441 + 2), np.hanning(25) / np.hanning(25).sum(), mode="same"
+        )
+        filled = filled + 0.22 * np.interp(np.arange(frames), np.arange(len(wander)) * 441, wander)
+    if style == "corrected":
+        pitch = filled
+    else:
+        glide = int(0.06 * SAMPLE_RATE)
+        kernel = np.hanning(glide * 2 + 1)
+        kernel /= kernel.sum()
+        pitch = np.convolve(filled, kernel, mode="same")
 
     # Vibrato that fades in over each note, about 5.5 Hz and +/- 35 cents.
     into_note = (t % NOTE_SECONDS) / NOTE_SECONDS
     vibrato = 0.35 * np.clip((into_note - 0.3) / 0.3, 0, 1) * np.sin(2 * np.pi * 5.5 * t)
+    if style == "corrected":
+        vibrato = 0.0
     freq = 440.0 * 2.0 ** ((pitch + vibrato - 69.0) / 12.0)
     phase = 2 * np.pi * np.cumsum(freq) / SAMPLE_RATE
 
@@ -140,6 +165,16 @@ def main() -> None:
     ):
         target = args.out / name
         print(f"wrote {target}" if afconvert(wav, target, *extra) else f"skipped {name} (afconvert unavailable)")
+
+    # A pair for trying the A/B comparison: the same performance "as sung"
+    # and "as corrected", the second starting 1.3 seconds later.
+    natural = args.out / "synthetic-vocal-natural-1min.wav"
+    write_wav(natural, synth(60.0, style="natural"))
+    print(f"wrote {natural}")
+    lead_in = np.zeros((int(1.3 * SAMPLE_RATE), 2), dtype=np.float32)
+    corrected = args.out / "synthetic-vocal-corrected-1min.wav"
+    write_wav(corrected, np.concatenate([lead_in, synth(60.0, style="corrected")]))
+    print(f"wrote {corrected}")
 
     if args.long:
         long_mp3 = args.out / "synthetic-vocal-60min.mp3"

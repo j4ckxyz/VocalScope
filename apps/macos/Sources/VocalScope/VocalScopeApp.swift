@@ -31,6 +31,7 @@ struct VocalScopeApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         Launch.mark("launched")
+        Snapshot.scheduleIfRequested()
     }
 
     /// Files opened from Finder: double-click, Open With, or a drop on the
@@ -89,5 +90,45 @@ enum Launch {
 
     static var waitsForDocument: Bool {
         CommandLine.arguments.dropFirst().contains { !$0.hasPrefix("-") }
+    }
+}
+
+/// Pictures of the window for the documentation, taken by the app itself so
+/// no screen-recording permission is involved. With
+/// `VOCALSCOPE_SNAPSHOT=/path/to.png` the app draws its window into that
+/// file a few seconds after launch (`VOCALSCOPE_SNAPSHOT_DELAY`, default 4)
+/// and quits. It does nothing otherwise. `scripts/macos-screenshots.sh`
+/// uses it.
+enum Snapshot {
+    static func scheduleIfRequested() {
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["VOCALSCOPE_SNAPSHOT"], !path.isEmpty else { return }
+        let delay = environment["VOCALSCOPE_SNAPSHOT_DELAY"].flatMap(Double.init) ?? 4
+        // Optional staging: a second recording to compare with, and a
+        // stretch of the timeline ("from,to" in seconds) to zoom in on.
+        if let other = environment["VOCALSCOPE_SNAPSHOT_COMPARE"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                _ = try? AppModel.shared.core.addRecording(path: other)
+            }
+        }
+        if let range = environment["VOCALSCOPE_SNAPSHOT_VIEW"]?.split(separator: ",").compactMap({ Double($0) }),
+           range.count == 2
+        {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay - 1) {
+                AppModel.shared.timeline?.show(from: range[0], to: range[1])
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            let window = NSApplication.shared.windows.first { $0.isVisible && $0.contentView != nil }
+            // The frame view includes the title bar and toolbar.
+            if let view = window?.contentView?.superview ?? window?.contentView,
+               let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)
+            {
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try? bitmap.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: path))
+            }
+            exit(0)
+        }
     }
 }

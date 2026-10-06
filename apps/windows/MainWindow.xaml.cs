@@ -84,6 +84,8 @@ public sealed partial class MainWindow : Window
         core = new AppCore(config, new Observer(this));
         seeks = new SeekQueue(core, status => DispatcherQueue.TryEnqueue(() => ApplyPlayback(status)));
         session = core.Session();
+        isolation = core.IsolationStatus();
+        models = core.SeparationModels();
 
         RegisterShortcuts();
         Root.ActualThemeChanged += (_, _) => RenderAll();
@@ -119,6 +121,12 @@ public sealed partial class MainWindow : Window
 
         public void WaveformProgress(string recordingId, float? fraction) =>
             window.DispatcherQueue.TryEnqueue(() => window.ApplyProgress(recordingId, fraction));
+
+        public void AnalysisProgress(string recordingId, float? fraction) =>
+            window.DispatcherQueue.TryEnqueue(() => window.ApplyAnalysisProgress(recordingId, fraction));
+
+        public void IsolationChanged(IsolationStatus status) =>
+            window.DispatcherQueue.TryEnqueue(() => window.ApplyIsolation(status));
 
         public void RecentsChanged(RecentItem[] recents) =>
             window.DispatcherQueue.TryEnqueue(() => window.ShowRecents(recents));
@@ -208,6 +216,7 @@ public sealed partial class MainWindow : Window
         ViewPanel.Visibility = open ? Visibility.Visible : Visibility.Collapsed;
         SaveItem.IsEnabled = SaveAsItem.IsEnabled = CloseItem.IsEnabled = open;
         PlaybackMenu.IsEnabled = ViewMenu.IsEnabled = open;
+        AddRecordingItem.IsEnabled = open;
 
         var title = open ? DocumentName + (session.Dirty ? " — Edited" : "") : "VocalScope";
         TitleText.Text = title;
@@ -218,7 +227,10 @@ public sealed partial class MainWindow : Window
             recordingId = null;
             duration = 0;
             ready = false;
+            pendingView = null;
             SubtitleText.Text = "";
+            ShowAnalysisState();
+            PitchCanvas.Children.Clear();
             ShowRecents(core.Recents());
             return;
         }
@@ -231,7 +243,13 @@ public sealed partial class MainWindow : Window
 
         var changed = recording.Id != recordingId;
         var newDuration = recording.Waveform?.DurationSeconds ?? audio.DurationSeconds ?? 0;
-        if (changed || duration <= 0)
+        if (changed && pendingView != null)
+        {
+            // Switching between two compared recordings: same music, same zoom.
+            following = true;
+            view = VocalscopeCoreMethods.TimelineClamp(pendingView, newDuration);
+        }
+        else if (changed || duration <= 0)
         {
             following = true;
             view = VocalscopeCoreMethods.TimelineFit(newDuration);
@@ -240,6 +258,7 @@ public sealed partial class MainWindow : Window
         {
             view = VocalscopeCoreMethods.TimelineClamp(view, newDuration);
         }
+        if (changed) pendingView = null;
         recordingId = recording.Id;
         duration = newDuration;
         ready = runtime.SourceExists && runtime.WaveformStatus == WaveformStatus.Ready;
@@ -247,6 +266,7 @@ public sealed partial class MainWindow : Window
         ShowStatus(recording, runtime);
         if (changed || !LabelHasFocus()) LoadLabel(recording);
         ShowFacts(recording);
+        ShowAnalysisState();
         RenderAll();
     }
 
@@ -395,9 +415,12 @@ public sealed partial class MainWindow : Window
     private void RenderAll()
     {
         if (recordingId == null) return;
+        // Changing the split re-enters here once the new sizes are known.
+        LayOutPitch();
         var width = WaveArea.ActualWidth;
         if (!ready || duration <= 0 || width <= 0 || WaveArea.ActualHeight <= 0)
         {
+            PitchCanvas.Children.Clear();
             WaveImage.Source = null;
             OverviewImage.Source = null;
             RulerCanvas.Children.Clear();
@@ -408,8 +431,8 @@ public sealed partial class MainWindow : Window
         var dark = Root.ActualTheme == ElementTheme.Dark;
         var columns = Math.Max(1, (int)Math.Round(width * Scale));
 
-        // Neutral on purpose: the accent colour is kept for the playhead and,
-        // from v0.2, the pitch curve drawn over the waveform.
+        // Neutral on purpose: the accent colour is kept for the playhead and
+        // the pitch curve.
         var waveColour = dark ? Color.FromArgb(255, 150, 150, 150) : Color.FromArgb(255, 110, 110, 110);
         var peaks = core.WaveformPeaks(recordingId, view.Start, view.Start + view.Span, (uint)columns);
         waveBitmap = Draw(peaks, columns, Math.Max(1, (int)Math.Round(WaveArea.ActualHeight * Scale)), waveColour, waveBitmap);
@@ -430,6 +453,7 @@ public sealed partial class MainWindow : Window
         }
 
         RenderRuler(width);
+        RenderPitch();
         PlacePlayhead(core.PlaybackStatus().PositionSeconds);
     }
 
@@ -501,7 +525,7 @@ public sealed partial class MainWindow : Window
         var x = (position - view.Start) / view.Span * width;
         var visible = x >= 0 && x <= width;
         Playhead.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        Playhead.Height = WaveArea.ActualHeight;
+        Playhead.Height = ContentArea.ActualHeight;
         if (visible) Canvas.SetLeft(Playhead, x - 1);
         OverviewPlayhead.Visibility = Visibility.Visible;
         Canvas.SetLeft(OverviewPlayhead, position / duration * width);
@@ -643,7 +667,7 @@ public sealed partial class MainWindow : Window
         if (!ready) return;
         scrubbing = true;
         following = true;
-        WaveArea.CapturePointer(e.Pointer);
+        ContentArea.CapturePointer(e.Pointer);
         SeekTo(TimeAt(e.GetCurrentPoint(WaveArea).Position.X));
     }
 
@@ -655,7 +679,7 @@ public sealed partial class MainWindow : Window
     private void OnWaveReleased(object sender, PointerRoutedEventArgs e)
     {
         scrubbing = false;
-        WaveArea.ReleasePointerCapture(e.Pointer);
+        ContentArea.ReleasePointerCapture(e.Pointer);
     }
 
     /// <summary>Wheel pans; Ctrl+wheel (which is also how a touchpad pinch arrives) zooms.</summary>
@@ -733,6 +757,9 @@ public sealed partial class MainWindow : Window
         Add(VirtualKey.S, ctrlShift, () => OnSaveAs(this, new RoutedEventArgs()));
         Add(VirtualKey.W, ctrl, () => OnCloseProject(this, new RoutedEventArgs()));
         Add(VirtualKey.I, ctrl, () => OnToggleInspector(this, new RoutedEventArgs()));
+        Add(VirtualKey.E, ctrl, () => OnExportReport(this, new RoutedEventArgs()));
+        Add(VirtualKey.L, ctrl, () => OnToggleListenVocals(this, new RoutedEventArgs()));
+        Add(VirtualKey.P, ctrlShift, () => OnTogglePitch(this, new RoutedEventArgs()));
         Add(VirtualKey.Number0, ctrl, () => OnZoomFit(this, new RoutedEventArgs()));
         Add((VirtualKey)187, ctrl, () => Zoom(ZoomStep));       // the + / = key
         Add(VirtualKey.Add, ctrl, () => Zoom(ZoomStep));
@@ -772,6 +799,9 @@ public sealed partial class MainWindow : Window
                 break;
             case VirtualKey.M:
                 OnToggleMute(this, new RoutedEventArgs());
+                break;
+            case VirtualKey.X when Comparison != null:
+                OnSwitchRecording(this, new RoutedEventArgs());
                 break;
             default:
                 return;

@@ -1,8 +1,8 @@
 //! Hardware profile of the machine VocalScope is running on.
 //!
-//! Used today for logs and the diagnostics panel. From v0.3.0 the same
-//! profile drives the choice of vocal-separation model, at which point GPU
-//! detection is added; nothing here pretends to know about the GPU yet.
+//! Used for logs, the diagnostics panel and the choice of vocal-isolation
+//! model, which runs on the CPU and so is chosen by memory and core count.
+//! Nothing here pretends to know about the GPU.
 
 use serde::Serialize;
 use sysinfo::System;

@@ -11,11 +11,18 @@
 //! a background one, so UIs must hop to their main thread before touching
 //! views. No lock is held while an observer is being called.
 
+mod analysis;
+mod comparison;
+mod isolation;
+
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use uuid::Uuid;
+
+pub use analysis::{AnalysisView, PitchReading};
+pub use isolation::{IsolationStage, IsolationStatus};
 
 use crate::audio::decode;
 use crate::audio::peaks::{compute_peaks, Peaks};
@@ -27,9 +34,10 @@ use crate::error::{AppError, AppResult, CoreError};
 use crate::hardware::{self, HardwareProfile};
 use crate::paths::{self, AppPaths};
 use crate::project::{io, Project, Recording, RecordingLabel, SourceKind, PROJECT_FILE_EXTENSION};
+use crate::separation::models::ModelStore;
 use crate::session::{Session, SessionView};
 
-/// Minimum spacing between waveform progress callbacks.
+/// Minimum spacing between progress callbacks of any background job.
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(80);
 /// Upper bound on columns per waveform request (an 8K display is 7 680).
 const MAX_WAVEFORM_COLUMNS: u32 = 16_384;
@@ -40,7 +48,8 @@ const MAX_WAVEFORM_COLUMNS: u32 = 16_384;
 pub struct AppConfig {
     /// Durable data: the settings and recent-files database.
     pub data_directory: PathBuf,
-    /// Disposable data: waveform summaries that can always be rebuilt.
+    /// Disposable data: waveform summaries and pitch tracks, which can
+    /// always be rebuilt.
     pub cache_directory: PathBuf,
     pub log_directory: PathBuf,
 }
@@ -58,6 +67,11 @@ pub trait AppObserver: Send + Sync {
     /// Decode progress for a recording's waveform, 0–1, or `None` when the
     /// file's length is not known until it has been fully read.
     fn waveform_progress(&self, recording_id: Uuid, fraction: Option<f32>);
+    /// Progress of a recording's pitch analysis, in the same form. The
+    /// result arrives through `session_changed`.
+    fn analysis_progress(&self, recording_id: Uuid, fraction: Option<f32>);
+    /// A vocal-isolation job started, moved on, finished or failed.
+    fn isolation_changed(&self, status: IsolationStatus);
     fn recents_changed(&self, recents: Vec<RecentItem>);
     fn settings_changed(&self, settings: Settings);
 }
@@ -77,6 +91,8 @@ struct Inner {
     session: Mutex<Session>,
     playback: PlaybackHandle,
     paths: AppPaths,
+    models: ModelStore,
+    isolation: Mutex<isolation::IsolationJob>,
     observer: Arc<dyn AppObserver>,
 }
 
@@ -164,14 +180,16 @@ fn project_recent_entry(project: &Project, path: &Path) -> RecentEntry {
     }
 }
 
-/// Stores a finished waveform (or its failure) and tells the UI.
+/// Stores a finished waveform (or its failure), starts what depends on it
+/// and tells the UI.
 fn finish_waveform_job(
-    inner: &Inner,
+    inner: &Arc<Inner>,
     recording_id: Uuid,
     cancel: &Arc<std::sync::atomic::AtomicBool>,
     outcome: Result<Arc<Peaks>, crate::error::UserError>,
     notify: bool,
 ) {
+    let succeeded = outcome.is_ok();
     let duration = outcome.as_ref().ok().map(|peaks| peaks.duration_seconds());
     let (stored, is_active) = {
         let mut session = inner.session();
@@ -190,6 +208,13 @@ fn finish_waveform_job(
         // The container's duration can be an estimate (MP3 without a length
         // header); the full decode is exact.
         let _ = inner.playback.set_duration(duration);
+    }
+    if succeeded {
+        // A readable file is worth analysing, and two of them worth aligning.
+        // Stored quietly when cached: the publish below (or the caller's)
+        // covers it.
+        analysis::start_analysis_job(inner, recording_id, false);
+        comparison::start_alignment(inner);
     }
     if notify {
         inner.publish_session();
@@ -257,22 +282,56 @@ fn start_waveform_job(inner: &Arc<Inner>, recording_id: Uuid, source: PathBuf) {
     }
 }
 
-/// Points the player at the active recording and starts its waveform job.
-/// A missing source is not an error here: the project still opens and the UI
-/// offers to locate the file.
-fn activate(inner: &Arc<Inner>) -> AppResult<()> {
-    let active = inner
-        .session()
-        .active_recording()
-        .map(|r| (r.id, r.source.path.clone(), r.duration_seconds()));
+/// Points the player at what should be heard for the active recording: the
+/// recording itself, or its isolated vocals when those are being listened to.
+fn load_playback(inner: &Arc<Inner>) -> AppResult<()> {
+    let active = {
+        let session = inner.session();
+        session.active_recording().and_then(|recording| {
+            let path = session.playback_path(recording.id)?;
+            Some((path, recording.duration_seconds()))
+        })
+    };
     match active {
-        Some((id, path, duration)) if path.exists() => {
+        Some((path, duration)) if path.exists() => {
             inner.playback.load(&path, duration)?;
-            start_waveform_job(inner, id, path);
         }
         _ => {
             inner.playback.unload()?;
         }
+    }
+    Ok(())
+}
+
+/// Starts everything that is derived from one recording's audio: finds any
+/// vocals already isolated from it, then its waveform, which in turn starts
+/// its pitch analysis. A missing source is not an error: the project still
+/// opens and the UI offers to locate the file.
+fn start_recording_jobs(inner: &Arc<Inner>, recording_id: Uuid) {
+    let source = inner
+        .session()
+        .project()
+        .and_then(|project| project.recording(recording_id))
+        .map(|recording| recording.source.path.clone());
+    let Some(source) = source.filter(|source| source.exists()) else {
+        return;
+    };
+    let stem = isolation::find_stem(&inner.paths, &source);
+    inner.session().set_stem(recording_id, stem);
+    start_waveform_job(inner, recording_id, source);
+}
+
+/// Loads the active recording for playback and starts the background work
+/// for every recording in the project.
+fn activate(inner: &Arc<Inner>) -> AppResult<()> {
+    let ids: Vec<Uuid> = inner
+        .session()
+        .project()
+        .map(|project| project.recordings.iter().map(|r| r.id).collect())
+        .unwrap_or_default();
+    load_playback(inner)?;
+    for id in ids {
+        start_recording_jobs(inner, id);
     }
     Ok(())
 }
@@ -357,13 +416,25 @@ impl AppCore {
             move |status| status_observer.playback_changed(status.clone()),
         );
 
-        let cache_dir = paths.waveform_cache_dir();
+        let stores = [
+            (
+                paths.waveform_cache_dir(),
+                paths::WAVEFORM_CACHE_LIMIT_BYTES,
+            ),
+            (
+                paths.analysis_cache_dir(),
+                paths::ANALYSIS_CACHE_LIMIT_BYTES,
+            ),
+            (paths.stems_dir(), paths::STEM_STORE_LIMIT_BYTES),
+        ];
         // Housekeeping and the hardware profile are not needed to show the
         // window; keep them off the launch path.
         std::thread::spawn(move || {
-            let removed = paths::prune_cache_dir(&cache_dir, paths::WAVEFORM_CACHE_LIMIT_BYTES);
-            if removed > 0 {
-                log::info!("removed {removed} old waveform cache file(s)");
+            for (directory, limit) in stores {
+                let removed = paths::prune_cache_dir(&directory, limit);
+                if removed > 0 {
+                    log::info!("removed {removed} old file(s) from {}", directory.display());
+                }
             }
             log::info!("hardware: {}", hardware::detect(true).log_line());
         });
@@ -373,6 +444,8 @@ impl AppCore {
                 db: Mutex::new(db),
                 session: Mutex::new(Session::default()),
                 playback,
+                models: ModelStore::new(paths.models_dir()),
+                isolation: Mutex::new(isolation::IsolationJob::default()),
                 paths,
                 observer,
             }),
@@ -459,7 +532,8 @@ impl AppCore {
             .session()
             .relocate(recording_id, replacement)
             .map_err(CoreError::from)?;
-        activate(&self.inner).map_err(CoreError::from)?;
+        load_playback(&self.inner).map_err(CoreError::from)?;
+        start_recording_jobs(&self.inner, recording_id);
         Ok(self.inner.publish_session())
     }
 
@@ -654,6 +728,8 @@ mod tests {
         sessions: Mutex<Vec<SessionView>>,
         playback: AtomicUsize,
         progress: AtomicUsize,
+        analysis_progress: AtomicUsize,
+        isolation: Mutex<Vec<IsolationStatus>>,
         recents: Mutex<Vec<Vec<RecentItem>>>,
         settings: Mutex<Vec<Settings>>,
     }
@@ -667,6 +743,12 @@ mod tests {
         }
         fn waveform_progress(&self, _recording_id: Uuid, _fraction: Option<f32>) {
             self.progress.fetch_add(1, Ordering::SeqCst);
+        }
+        fn analysis_progress(&self, _recording_id: Uuid, _fraction: Option<f32>) {
+            self.analysis_progress.fetch_add(1, Ordering::SeqCst);
+        }
+        fn isolation_changed(&self, status: IsolationStatus) {
+            self.isolation.lock().unwrap().push(status);
         }
         fn recents_changed(&self, recents: Vec<RecentItem>) {
             self.recents.lock().unwrap().push(recents);
@@ -950,6 +1032,621 @@ mod tests {
         assert!(f.app.recents().is_empty());
 
         assert_eq!(f.app.reset_settings().unwrap(), Settings::default());
+    }
+
+    // ── Pitch analysis, export, comparison and isolation ───────────────
+
+    use crate::analysis::compare::AlignmentQuality;
+    use crate::analysis::pitch::test_support::synth;
+    use crate::analysis::test_support::{phrase, write_wav, VOICE};
+    use crate::export::ExportFormat;
+    use crate::project::AnalysisSource;
+    use crate::separation::mdx::test_support::ScalingModel;
+    use crate::session::AnalysisStatus;
+
+    const RATE: u32 = 44_100;
+
+    impl Fixture {
+        fn audio(&self, name: &str, samples: &[f32]) -> PathBuf {
+            let path = self.dir.path().join(name);
+            write_wav(&path, RATE, &[samples, samples]);
+            path
+        }
+
+        /// Waits for background work to bring the session to some state.
+        fn wait_until(&self, what: &str, done: impl Fn(&SessionView) -> bool) -> SessionView {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let view = self.app.session();
+                if done(&view) {
+                    return view;
+                }
+                assert!(Instant::now() < deadline, "timed out waiting for {what}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+
+        fn wait_for_analysis(&self) -> SessionView {
+            self.wait_until("the pitch analysis", |view| {
+                view.recordings
+                    .iter()
+                    .all(|r| r.analysis_status == AnalysisStatus::Ready)
+            })
+        }
+    }
+
+    /// Fourteen seconds of melody with irregular notes and rests. `sag`
+    /// lowers the note sung between 5.0 and 5.6 s by that many semitones.
+    fn melody(sag: f64) -> Vec<f32> {
+        // (seconds, MIDI note or 0 for a rest)
+        const NOTES: [(f64, f64); 24] = [
+            (0.45, 60.0),
+            (0.30, 62.0),
+            (0.25, 0.0),
+            (0.70, 64.0),
+            (0.35, 65.0),
+            (0.40, 0.0),
+            (0.55, 67.0),
+            (0.30, 65.0),
+            (0.90, 64.0),
+            (0.80, 0.0),
+            (0.60, 62.0),
+            (0.45, 60.0),
+            (0.35, 0.0),
+            (0.75, 67.0),
+            (0.40, 69.0),
+            (0.50, 0.0),
+            (0.85, 65.0),
+            (0.30, 64.0),
+            (0.65, 0.0),
+            (0.55, 62.0),
+            (0.95, 60.0),
+            (0.45, 0.0),
+            (0.70, 64.0),
+            (1.45, 60.0),
+        ];
+        let at = |t: f64| {
+            let mut start = 0.0;
+            for (seconds, note) in NOTES {
+                if t < start + seconds {
+                    return (start, seconds, note);
+                }
+                start += seconds;
+            }
+            (start, 1.0, 0.0)
+        };
+        synth(
+            RATE,
+            14.0,
+            &VOICE,
+            |t| {
+                let (_, _, note) = at(t);
+                let note = if note == 0.0 { 60.0 } else { note };
+                // The D that lasts from 5.0 to 5.6 s.
+                if (5.0..5.6).contains(&t) {
+                    note - sag
+                } else {
+                    note
+                }
+            },
+            |t| {
+                let (start, seconds, note) = at(t);
+                if note == 0.0 {
+                    0.0
+                } else {
+                    // A short fade in and out, so notes have natural edges.
+                    let into = t - start;
+                    0.4 * (into / 0.02).min(1.0) * ((seconds - into) / 0.03).min(1.0)
+                }
+            },
+        )
+    }
+
+    #[test]
+    fn a_recording_is_analysed_after_its_waveform() {
+        let f = fixture();
+        let path = f.audio("phrase.wav", &phrase(RATE));
+        let opened = f.app.open_path(path.clone()).unwrap();
+        let id = opened.project.unwrap().recordings[0].id;
+        let ready = f.wait_for_analysis();
+        assert!(!ready.dirty, "analysing is not an edit");
+        assert!(!ready.recordings[0].analysed_isolated_vocals);
+        let analysis = f.app.analysis(id).unwrap();
+        let names: Vec<&str> = analysis.notes.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, ["C4", "D4", "E4", "G4", "E4"]);
+        assert_eq!(analysis.summary.note_count, 5);
+        assert_eq!(analysis.indicators.indicators.len(), 4);
+        // Nothing says this file is vocals only, so the results carry a caution.
+        assert!(analysis
+            .caution
+            .as_deref()
+            .unwrap()
+            .contains("isolating the vocals"));
+        // C4 to G4 with headroom, widened to at least an octave.
+        assert!(analysis.display_low_midi <= 57.5 && analysis.display_high_midi >= 69.5);
+        assert!(analysis.display_high_midi - analysis.display_low_midi >= 12.0);
+
+        let curve = f.app.pitch_curve(id, 0.0, 3.0, 300);
+        assert_eq!(curve.midi.len(), 300);
+        assert!((curve.midi[20] - 60.0).abs() < 0.02);
+        assert!(f.app.pitch_curve(id, f64::NAN, 1.0, 10).midi.is_empty());
+        assert!(f
+            .app
+            .pitch_curve(Uuid::new_v4(), 0.0, 1.0, 10)
+            .midi
+            .is_empty());
+
+        let reading = f.app.pitch_at(id, 0.2).unwrap();
+        assert_eq!(reading.note_name, "C4");
+        assert!(reading.deviation_cents.abs() < 1.0);
+        assert!((reading.frequency_hz - 261.63).abs() < 0.2);
+        assert!(reading.confidence > 0.9);
+        assert!(f.app.pitch_at(id, 1.6).is_none(), "the breath has no pitch");
+        assert!(f.app.pitch_at(id, -1.0).is_none());
+        assert!(f.app.pitch_at(id, 99.0).is_none());
+
+        // Told the user it is vocals only: no caution any more.
+        f.app
+            .update_recording_label(id, RecordingLabel::default(), SourceKind::VocalStem)
+            .unwrap();
+        assert!(f.app.analysis(id).unwrap().caution.is_none());
+
+        // Reopening finds the analysis in the cache, ready in the first view.
+        f.app.close_project().unwrap();
+        let again = f.app.open_path(path).unwrap();
+        assert_eq!(again.recordings[0].analysis_status, AnalysisStatus::Ready);
+        let id = again.project.unwrap().recordings[0].id;
+        assert_eq!(f.app.analysis(id).unwrap().notes.len(), 5);
+
+        // Analysing again from scratch gives the same answer.
+        let restarted = f.app.reanalyse(id).unwrap();
+        assert_eq!(
+            restarted.recordings[0].analysis_status,
+            AnalysisStatus::Pending
+        );
+        f.wait_for_analysis();
+        assert_eq!(f.app.analysis(id).unwrap().notes.len(), 5);
+        assert!(f.recorder.analysis_progress.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn analyses_are_exported_in_every_format() {
+        let f = fixture();
+        let view = f.app.open_path(f.audio("take.wav", &phrase(RATE))).unwrap();
+        let id = view.project.unwrap().recordings[0].id;
+        // A name with a character no file system accepts.
+        let label = RecordingLabel {
+            recording_name: Some("lead: take 1".into()),
+            ..Default::default()
+        };
+        f.app
+            .update_recording_label(id, label, SourceKind::Unspecified)
+            .unwrap();
+
+        let too_early =
+            f.app
+                .export_analysis(Uuid::new_v4(), ExportFormat::Json, f.dir.path().join("x"));
+        match too_early {
+            Err(CoreError::Failure { error }) => assert_eq!(error.code, "recording_not_found"),
+            Ok(_) => panic!("expected an error"),
+        }
+        f.wait_for_analysis();
+
+        assert_eq!(
+            f.app.suggested_export_name(id, ExportFormat::PitchCsv),
+            "lead- take 1 pitch.csv"
+        );
+        assert_eq!(
+            f.app.suggested_export_name(id, ExportFormat::Report),
+            "lead- take 1 report.md"
+        );
+        assert_eq!(analysis::export_file_extension(ExportFormat::Midi), "mid");
+
+        let out = f.dir.path().join("exports");
+        for (format, name, starts_with) in [
+            (ExportFormat::Json, "a.json", "{\n"),
+            (ExportFormat::PitchCsv, "pitch", "time_seconds,"),
+            (ExportFormat::NotesCsv, "notes.CSV", "start_seconds,"),
+            (ExportFormat::Midi, "song.mid", "MThd"),
+            (
+                ExportFormat::Report,
+                "report.txt",
+                "# VocalScope report: lead: take 1",
+            ),
+        ] {
+            let written = f.app.export_analysis(id, format, out.join(name)).unwrap();
+            let bytes = std::fs::read(&written).unwrap();
+            assert!(
+                bytes.starts_with(starts_with.as_bytes()),
+                "{format:?} began with {:?}",
+                String::from_utf8_lossy(&bytes[..bytes.len().min(30)])
+            );
+        }
+        // The extension is supplied when missing, and never doubled.
+        assert!(out.join("pitch.csv").exists());
+        assert!(out.join("notes.CSV").exists());
+        assert!(out.join("report.txt.md").exists());
+        assert_eq!(std::fs::read_dir(&out).unwrap().count(), 5);
+    }
+
+    #[test]
+    fn two_versions_are_aligned_compared_and_switched_between() {
+        let f = fixture();
+        let original = f.audio("original.wav", &melody(0.4));
+        // The other version starts half a second later and holds the note
+        // the original lets sag.
+        let mut later = vec![0f32; RATE as usize / 2];
+        later.extend(melody(0.0));
+        let remaster = f.audio("remaster.wav", &later);
+
+        let opened = f.app.open_path(original).unwrap();
+        let first = opened.project.unwrap().recordings[0].id;
+        assert!(opened.comparison.is_none());
+        let added = f.app.add_recording(remaster.clone()).unwrap();
+        assert!(added.dirty);
+        let second = added.project.as_ref().unwrap().recordings[1].id;
+        assert_eq!(added.active_recording_id, Some(first));
+
+        let ready = f.wait_until("the comparison", |view| {
+            view.comparison.as_ref().is_some_and(|c| c.pitch.is_some())
+        });
+        let comparison = ready.comparison.unwrap();
+        assert_eq!(comparison.reference_recording_id, first);
+        assert_eq!(comparison.other_recording_id, second);
+        let alignment = comparison.alignment.unwrap();
+        assert_eq!(alignment.quality, AlignmentQuality::Good, "{alignment:?}");
+        assert!(
+            (alignment.offset_seconds - 0.5).abs() < 0.01,
+            "{alignment:?}"
+        );
+        assert_eq!(alignment.speed_ratio, 1.0);
+        let pitch = comparison.pitch.unwrap();
+        assert!(pitch.median_difference_cents.unwrap().abs() < 1.0);
+        assert_eq!(pitch.regions.len(), 1, "{:#?}", pitch.regions);
+        let region = pitch.regions[0];
+        assert!((region.start_seconds - 5.0).abs() < 0.06, "{region:?}");
+        assert!((region.end_seconds - 5.6).abs() < 0.06, "{region:?}");
+        assert!(
+            (region.mean_difference_cents - 40.0).abs() < 4.0,
+            "{region:?}"
+        );
+
+        // The other version's curve, drawn on the first one's timeline,
+        // holds the D where the first one sags.
+        let own = f.app.pitch_curve(first, 5.2, 5.4, 20);
+        let other = f.app.comparison_curve(first, 5.2, 5.4, 20);
+        assert_eq!(own.midi.len(), other.midi.len());
+        assert!((own.midi[10] - 61.6).abs() < 0.03, "{}", own.midi[10]);
+        assert!((other.midi[10] - 62.0).abs() < 0.03, "{}", other.midi[10]);
+        assert!((f.app.map_time(first, second, 2.0).unwrap() - 2.5).abs() < 0.005);
+        assert!((f.app.map_time(second, first, 2.5).unwrap() - 2.0).abs() < 0.005);
+
+        // Switching keeps the musical position, not the clock position.
+        f.app.seek(2.0).unwrap();
+        let switched = f.app.set_active_recording(second).unwrap();
+        assert_eq!(switched.active_recording_id, Some(second));
+        let status = f.app.playback_status();
+        assert!((status.position_seconds - 2.5).abs() < 0.01, "{status:?}");
+        assert!((status.duration_seconds.unwrap() - 14.5).abs() < 0.01);
+        // And from the second one's side the first is the overlay.
+        let overlay = f.app.comparison_curve(second, 5.7, 5.9, 20);
+        assert!(
+            (overlay.midi[10] - 61.6).abs() < 0.03,
+            "{}",
+            overlay.midi[10]
+        );
+        f.app.set_active_recording(first).unwrap();
+        assert!((f.app.playback_status().position_seconds - 2.0).abs() < 0.01);
+
+        // A third recording, or a project as one, is refused.
+        assert_eq!(
+            user_error(f.app.add_recording(remaster)).code,
+            "invalid_input"
+        );
+        assert_eq!(
+            user_error(f.app.add_recording(f.dir.path().join("p.vocalscope"))).code,
+            "invalid_input"
+        );
+
+        // Both recordings survive a save and reopen, and are compared again.
+        let file = f.dir.path().join("pair.vocalscope");
+        f.app.save_project(Some(file.clone())).unwrap();
+        assert_eq!(f.app.recents()[0].detail.as_deref(), Some("2 recordings"));
+        f.app.close_project().unwrap();
+        let reopened = f.app.open_path(file).unwrap();
+        assert_eq!(reopened.project.unwrap().recordings.len(), 2);
+        let again = f.wait_until("the comparison after reopening", |view| {
+            view.comparison.as_ref().is_some_and(|c| c.pitch.is_some())
+        });
+        assert_eq!(again.comparison.unwrap().pitch.unwrap().regions.len(), 1);
+
+        // The report of either recording describes the comparison.
+        let report = f
+            .app
+            .export_analysis(first, ExportFormat::Report, f.dir.path().join("r.md"))
+            .unwrap();
+        let report = std::fs::read_to_string(report).unwrap();
+        assert!(report.contains("## Comparison with remaster"), "{report}");
+        assert!(report.contains("starts 0.500 s later"), "{report}");
+
+        // Removing the second leaves an ordinary single-recording project.
+        f.app.set_active_recording(second).unwrap();
+        let removed = f.app.remove_recording(second).unwrap();
+        assert_eq!(removed.active_recording_id, Some(first));
+        assert!(removed.comparison.is_none());
+        assert!(f.app.playback_status().has_track);
+        assert!(f.app.comparison_curve(first, 0.0, 1.0, 10).midi.is_empty());
+        assert_eq!(f.app.map_time(first, second, 1.0), None);
+    }
+
+    /// Makes a model look downloaded without downloading it.
+    fn pretend_installed(f: &Fixture, model_id: &str) {
+        let spec = crate::separation::models::find_model(model_id).unwrap();
+        let path = f.app.model_path(model_id);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::File::create(&path)
+            .unwrap()
+            .set_len(spec.size_bytes)
+            .unwrap();
+    }
+
+    fn wait_for_isolation(f: &Fixture) -> IsolationStatus {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        loop {
+            let status = f.app.isolation_status();
+            if matches!(status.stage, IsolationStage::Idle | IsolationStage::Failed) {
+                return status;
+            }
+            assert!(Instant::now() < deadline, "isolation never finished");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn isolated_vocals_are_made_analysed_heard_and_removed() {
+        const MODEL: &str = "kuielab_b_vocals";
+        let f = fixture();
+        let view = f.app.open_path(f.audio("song.wav", &phrase(RATE))).unwrap();
+        let id = view.project.unwrap().recordings[0].id;
+        f.wait_for_analysis();
+
+        let models = f.app.separation_models();
+        assert_eq!(models.len(), isolation::separation_model_count() as usize);
+        assert!(models.iter().all(|m| !m.installed));
+        assert_eq!(models.iter().filter(|m| m.recommended).count(), 1);
+        match f.app.isolate_vocals(id, "no_such_model".into()) {
+            Err(CoreError::Failure { error }) => assert_eq!(error.code, "model_unavailable"),
+            Ok(_) => panic!("expected an error"),
+        }
+
+        pretend_installed(&f, MODEL);
+        assert!(f
+            .app
+            .separation_models()
+            .iter()
+            .any(|m| m.id == MODEL && m.installed));
+
+        // A stand-in for the model that passes the left channel through at
+        // half level, so the "vocals" are still the same tune.
+        let started = f
+            .app
+            .isolate_vocals_with_loader(
+                id,
+                MODEL,
+                Box::new(|_, _| {
+                    Ok(Box::new(ScalingModel {
+                        gain: 0.5,
+                        runs: Default::default(),
+                    }))
+                }),
+            )
+            .unwrap();
+        assert_eq!(started.stage, IsolationStage::Preparing);
+        assert_eq!(started.recording_id, Some(id));
+        assert_eq!(wait_for_isolation(&f).stage, IsolationStage::Idle);
+
+        let stages: Vec<IsolationStage> = f
+            .recorder
+            .isolation
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|status| status.stage)
+            .collect();
+        assert_eq!(stages.first(), Some(&IsolationStage::Preparing));
+        assert!(stages.contains(&IsolationStage::Isolating));
+        assert_eq!(stages.last(), Some(&IsolationStage::Idle));
+
+        // The stem is attached, and the analysis is redone from it.
+        let ready = f.wait_until("the analysis of the vocals", |view| {
+            view.recordings[0].analysed_isolated_vocals
+                && view.recordings[0].analysis_status == AnalysisStatus::Ready
+        });
+        let stem = ready.recordings[0].vocal_stem.clone().unwrap();
+        assert_eq!(stem.model_id, MODEL);
+        assert_eq!(stem.model_name, "KUIELab MDX-Net B");
+        assert!(stem.path.exists());
+        assert!(!ready.dirty);
+        let analysis = f.app.analysis(id).unwrap();
+        assert!(analysis.isolated_vocals);
+        assert!(analysis.caution.is_none());
+        assert_eq!(analysis.notes.len(), 5);
+
+        // The user can still ask for the original to be analysed instead.
+        let chosen = f
+            .app
+            .set_analysis_source(id, AnalysisSource::Original)
+            .unwrap();
+        assert!(chosen.dirty);
+        let back = f.wait_for_analysis();
+        assert!(!back.recordings[0].analysed_isolated_vocals);
+        f.app
+            .set_analysis_source(id, AnalysisSource::IsolatedVocalsWhenAvailable)
+            .unwrap();
+        f.wait_until("the vocals to be analysed again", |view| {
+            view.recordings[0].analysed_isolated_vocals
+        });
+
+        // Listening switches what is played without losing the place.
+        f.app.seek(1.0).unwrap();
+        let listening = f.app.set_listening_to_vocals(true).unwrap();
+        assert!(listening.listening_to_vocals);
+        let status = f.app.playback_status();
+        assert!(status.has_track);
+        assert_eq!(status.position_seconds, 1.0);
+
+        let copy = f
+            .app
+            .export_vocal_stem(id, f.dir.path().join("vocals only"))
+            .unwrap();
+        assert_eq!(copy.file_name().unwrap(), "vocals only.wav");
+        let info = decode::probe(&copy).unwrap();
+        assert_eq!((info.sample_rate_hz, info.channel_count), (44_100, 2));
+
+        // Reopening the same audio finds the stem again without any project.
+        f.app.close_project().unwrap();
+        let reopened = f.app.open_path(f.dir.path().join("song.wav")).unwrap();
+        let id = reopened.project.unwrap().recordings[0].id;
+        assert_eq!(
+            reopened.recordings[0].vocal_stem.as_ref().unwrap().model_id,
+            MODEL
+        );
+        assert!(!reopened.listening_to_vocals);
+        assert!(reopened.recordings[0].analysed_isolated_vocals);
+
+        // Removing the stem falls back to the recording itself everywhere.
+        f.app.set_listening_to_vocals(true).unwrap();
+        let removed = f.app.remove_vocal_stem(id).unwrap();
+        assert!(removed.recordings[0].vocal_stem.is_none());
+        assert!(!removed.listening_to_vocals);
+        assert!(!stem.path.exists());
+        let plain = f.wait_for_analysis();
+        assert!(!plain.recordings[0].analysed_isolated_vocals);
+        match f.app.export_vocal_stem(id, f.dir.path().join("none.wav")) {
+            Err(CoreError::Failure { error }) => assert_eq!(error.code, "invalid_input"),
+            Ok(_) => panic!("expected an error"),
+        }
+
+        f.app.remove_separation_model(MODEL.into()).unwrap();
+        assert!(f.app.separation_models().iter().all(|m| !m.installed));
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_isolation_leaves_things_as_they_were() {
+        const MODEL: &str = "kuielab_b_vocals";
+        let f = fixture();
+        let view = f.app.open_path(f.audio("song.wav", &phrase(RATE))).unwrap();
+        let id = view.project.unwrap().recordings[0].id;
+        f.wait_for_analysis();
+        pretend_installed(&f, MODEL);
+
+        // The real loader, given a file that is not a model.
+        f.app.isolate_vocals(id, MODEL.into()).unwrap();
+        let failed = wait_for_isolation(&f);
+        assert_eq!(failed.stage, IsolationStage::Failed);
+        assert_eq!(failed.error.as_ref().unwrap().code, "separation_failed");
+        assert_eq!(failed.recording_id, Some(id));
+        assert!(f.app.session().recordings[0].vocal_stem.is_none());
+
+        // Cancelled while the model is "loading": back to idle, no stem.
+        let app = f.app.clone();
+        f.app
+            .isolate_vocals_with_loader(
+                id,
+                MODEL,
+                Box::new(move |_, _| {
+                    app.cancel_isolation();
+                    Ok(Box::new(ScalingModel {
+                        gain: 1.0,
+                        runs: Default::default(),
+                    }))
+                }),
+            )
+            .unwrap();
+        let cancelled = wait_for_isolation(&f);
+        assert_eq!(cancelled, IsolationStatus::default());
+        assert!(f.app.session().recordings[0].vocal_stem.is_none());
+        let stems = f.dir.path().join("data").join("stems");
+        assert!(!stems.exists() || std::fs::read_dir(stems).unwrap().count() == 0);
+
+        // Only one job at a time.
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        f.app
+            .isolate_vocals_with_loader(
+                id,
+                MODEL,
+                Box::new(move |_, _| {
+                    let _ = wait.recv();
+                    Err(AppError::Cancelled)
+                }),
+            )
+            .unwrap();
+        match f.app.isolate_vocals(id, MODEL.into()) {
+            Err(CoreError::Failure { error }) => assert_eq!(error.code, "busy"),
+            Ok(_) => panic!("expected an error"),
+        }
+        match f.app.remove_separation_model(MODEL.into()) {
+            Err(CoreError::Failure { error }) => assert_eq!(error.code, "busy"),
+            Ok(_) => panic!("expected an error"),
+        }
+        release.send(()).unwrap();
+        assert_eq!(wait_for_isolation(&f).stage, IsolationStage::Idle);
+    }
+
+    /// Downloads a real model (about 30 MB) and isolates with it. Run
+    /// explicitly with `cargo test -- --ignored isolation_smoke`; it is
+    /// skipped in CI, which should not depend on the network.
+    #[test]
+    #[ignore = "downloads a separation model from the internet"]
+    fn isolation_smoke() {
+        const MODEL: &str = "kuielab_b_vocals";
+        let f = fixture();
+        let view = f.app.open_path(f.audio("song.wav", &melody(0.0))).unwrap();
+        let id = view.project.unwrap().recordings[0].id;
+        f.wait_for_analysis();
+
+        let started = f.app.isolate_vocals(id, MODEL.into()).unwrap();
+        assert_eq!(started.stage, IsolationStage::Downloading);
+        let deadline = Instant::now() + Duration::from_secs(600);
+        loop {
+            let status = f.app.isolation_status();
+            match status.stage {
+                IsolationStage::Idle => break,
+                IsolationStage::Failed => panic!("isolation failed: {:?}", status.error),
+                _ => {}
+            }
+            assert!(Instant::now() < deadline, "isolation never finished");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let stages: Vec<IsolationStage> = f
+            .recorder
+            .isolation
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|status| status.stage)
+            .collect();
+        for stage in [
+            IsolationStage::Downloading,
+            IsolationStage::Preparing,
+            IsolationStage::Isolating,
+        ] {
+            assert!(stages.contains(&stage), "{stage:?} was never reported");
+        }
+        assert!(f
+            .app
+            .separation_models()
+            .iter()
+            .any(|m| m.id == MODEL && m.installed));
+
+        let ready = f.wait_until("the analysis of the vocals", |view| {
+            view.recordings[0].analysed_isolated_vocals
+                && view.recordings[0].analysis_status == AnalysisStatus::Ready
+        });
+        let stem = ready.recordings[0].vocal_stem.clone().unwrap();
+        let info = decode::probe(&stem.path).unwrap();
+        assert_eq!((info.sample_rate_hz, info.channel_count), (44_100, 2));
+        assert!((info.duration_seconds.unwrap() - 14.0).abs() < 0.01);
     }
 
     #[test]

@@ -40,8 +40,28 @@
                     <MenuFlyoutItem x:Name="SaveItem" Text="Save Project" Click="OnSave" KeyboardAcceleratorTextOverride="Ctrl+S" />
                     <MenuFlyoutItem x:Name="SaveAsItem" Text="Save Project As…" Click="OnSaveAs" KeyboardAcceleratorTextOverride="Ctrl+Shift+S" />
                     <MenuFlyoutSeparator />
+                    <MenuFlyoutSubItem x:Name="ExportMenu" Text="Export">
+                        <MenuFlyoutItem x:Name="ExportReportItem" Text="Report…" Click="OnExportReport" KeyboardAcceleratorTextOverride="Ctrl+E" />
+                        <MenuFlyoutItem x:Name="ExportPitchItem" Text="Pitch Curve as CSV…" Click="OnExportPitchCsv" />
+                        <MenuFlyoutItem x:Name="ExportNotesItem" Text="Notes as CSV…" Click="OnExportNotesCsv" />
+                        <MenuFlyoutItem x:Name="ExportMidiItem" Text="Notes as MIDI…" Click="OnExportMidi" />
+                        <MenuFlyoutItem x:Name="ExportJsonItem" Text="Everything as JSON…" Click="OnExportJson" />
+                        <MenuFlyoutSeparator />
+                        <MenuFlyoutItem x:Name="ExportVocalsItem" Text="Isolated Vocals as WAV…" Click="OnExportVocals" />
+                    </MenuFlyoutSubItem>
+                    <MenuFlyoutSeparator />
                     <MenuFlyoutItem x:Name="CloseItem" Text="Close Project" Click="OnCloseProject" KeyboardAcceleratorTextOverride="Ctrl+W" />
                     <MenuFlyoutItem Text="Exit" Click="OnExit" KeyboardAcceleratorTextOverride="Alt+F4" />
+                </MenuBarItem>
+                <MenuBarItem x:Name="AnalysisMenu" Title="Analysis">
+                    <ToggleMenuFlyoutItem x:Name="ShowPitchItem" Text="Show Pitch on the Timeline" IsChecked="True" Click="OnTogglePitch" KeyboardAcceleratorTextOverride="Ctrl+Shift+P" />
+                    <MenuFlyoutItem x:Name="ReanalyseItem" Text="Analyse Again" Click="OnReanalyse" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="IsolateItem" Text="Isolate Vocals…" Click="OnShowIsolation" />
+                    <ToggleMenuFlyoutItem x:Name="ListenVocalsItem" Text="Listen to the Isolated Vocals" Click="OnToggleListenVocals" KeyboardAcceleratorTextOverride="Ctrl+L" />
+                    <MenuFlyoutSeparator />
+                    <MenuFlyoutItem x:Name="AddRecordingItem" Text="Add Recording to Compare…" Click="OnAddRecording" />
+                    <MenuFlyoutItem x:Name="SwitchRecordingItem" Text="Switch to the Other Recording" Click="OnSwitchRecording" KeyboardAcceleratorTextOverride="X" />
                 </MenuBarItem>
                 <MenuBarItem x:Name="PlaybackMenu" Title="Playback">
                     <MenuFlyoutItem Text="Play/Pause" Click="OnTogglePlay" KeyboardAcceleratorTextOverride="Space" />
@@ -80,6 +100,13 @@
             </StackPanel>
 
             <StackPanel x:Name="ViewPanel" Grid.Column="2" Orientation="Horizontal" Spacing="4" Visibility="Collapsed">
+                <StackPanel x:Name="RecordingSwitch" Orientation="Horizontal" Spacing="2" Margin="0,0,8,0" Visibility="Collapsed">
+                    <ToggleButton x:Name="RecordingAButton" Content="A" Click="OnChooseRecordingA" MinWidth="34" ToolTipService.ToolTip="Show and play recording A (X switches)" AutomationProperties.Name="Recording A" />
+                    <ToggleButton x:Name="RecordingBButton" Content="B" Click="OnChooseRecordingB" MinWidth="34" ToolTipService.ToolTip="Show and play recording B (X switches)" AutomationProperties.Name="Recording B" />
+                </StackPanel>
+                <ToggleButton x:Name="PitchButton" IsChecked="True" Click="OnTogglePitch" Margin="0,0,8,0" ToolTipService.ToolTip="Show or hide the pitch curve (Ctrl+Shift+P)" AutomationProperties.Name="Show pitch">
+                    <FontIcon Glyph="&#xE9D9;" FontSize="14" />
+                </ToggleButton>
                 <Button Click="OnZoomOut" ToolTipService.ToolTip="Zoom out (Ctrl+-)" AutomationProperties.Name="Zoom out">
                     <FontIcon Glyph="&#xE71F;" FontSize="14" />
                 </Button>
@@ -144,44 +171,154 @@
 
                     <Canvas x:Name="RulerCanvas" Grid.Row="1" />
 
-                    <Grid x:Name="WaveArea" Grid.Row="2" Background="Transparent"
+                    <!-- Pitch (curve, notes and a note grid) above the waveform. -->
+                    <Grid x:Name="ContentArea" Grid.Row="2" Background="Transparent"
                           PointerPressed="OnWavePressed" PointerMoved="OnWaveMoved" PointerReleased="OnWaveReleased" PointerWheelChanged="OnWaveWheel">
-                        <Image x:Name="WaveImage" Stretch="Fill" />
-                        <Canvas>
+                        <Grid.RowDefinitions>
+                            <RowDefinition x:Name="PitchRow" Height="0" />
+                            <RowDefinition Height="*" MinHeight="54" />
+                        </Grid.RowDefinitions>
+                        <Grid x:Name="PitchArea" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1" SizeChanged="OnTimelineSizeChanged">
+                            <Canvas x:Name="PitchCanvas" />
+                        </Grid>
+                        <Grid x:Name="WaveArea" Grid.Row="1" SizeChanged="OnTimelineSizeChanged">
+                            <Image x:Name="WaveImage" Stretch="Fill" />
+                        </Grid>
+                        <Canvas Grid.RowSpan="2">
                             <Rectangle x:Name="Playhead" Width="2" Visibility="Collapsed" Fill="{ThemeResource AccentFillColorDefaultBrush}" />
                         </Canvas>
-                        <StackPanel x:Name="StatusPanel" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10" MaxWidth="460" Visibility="Collapsed">
+                        <StackPanel x:Name="StatusPanel" Grid.RowSpan="2" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10" MaxWidth="460" Visibility="Collapsed">
                             <ProgressBar x:Name="ReadProgress" Width="220" />
                             <TextBlock x:Name="StatusTitle" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Style="{ThemeResource BodyStrongTextBlockStyle}" />
                             <TextBlock x:Name="StatusText" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                             <Button x:Name="LocateButton" Content="Locate File…" HorizontalAlignment="Center" Click="OnLocate" Style="{ThemeResource AccentButtonStyle}" />
                         </StackPanel>
+                        <!-- A quiet note while background work that changes the timeline runs. -->
+                        <Border x:Name="BusyBadge" Grid.RowSpan="2" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="10" Padding="10,5"
+                                CornerRadius="12" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" Visibility="Collapsed">
+                            <TextBlock x:Name="BusyText" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        </Border>
                     </Grid>
                 </Grid>
 
                 <!-- Details: the user's label (editable) and the file's facts (as found). -->
-                <ScrollViewer x:Name="Inspector" Grid.Column="1" Width="300"
-                              BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,1,0,0">
-                    <StackPanel Padding="16,12,16,20" Spacing="10">
-                        <TextBlock Text="Label" Style="{ThemeResource BodyStrongTextBlockStyle}" />
-                        <TextBox x:Name="NameBox" Header="Name" LostFocus="OnLabelCommit" />
-                        <TextBox x:Name="VersionBox" Header="Version" PlaceholderText="e.g. Original release" LostFocus="OnLabelCommit" />
-                        <TextBox x:Name="YearBox" Header="Release year" MaxLength="4" LostFocus="OnLabelCommit" />
-                        <ComboBox x:Name="KindBox" Header="This audio is" HorizontalAlignment="Stretch" SelectionChanged="OnKindChanged">
-                            <ComboBoxItem Content="Not specified" />
-                            <ComboBoxItem Content="Full mix" />
-                            <ComboBoxItem Content="Vocal stem" />
-                        </ComboBox>
-                        <TextBox x:Name="NotesBox" Header="Notes" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" LostFocus="OnLabelCommit" />
-                        <TextBlock Text="File" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
-                        <Grid x:Name="FactsGrid" ColumnSpacing="12" RowSpacing="6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                            </Grid.ColumnDefinitions>
-                        </Grid>
-                    </StackPanel>
-                </ScrollViewer>
+                <Grid x:Name="Inspector" Grid.Column="1" Width="320"
+                      BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,1,0,0">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <SelectorBar x:Name="InspectorTabs" Margin="8,2,8,0" SelectionChanged="OnInspectorTabChanged">
+                        <SelectorBarItem x:Name="DetailsTab" Text="Details" IsSelected="True" />
+                        <SelectorBarItem x:Name="AnalysisTab" Text="Analysis" />
+                        <SelectorBarItem x:Name="CompareTab" Text="Compare" />
+                    </SelectorBar>
+
+                    <!-- Details: the user's label (editable) and the file's facts (as found). -->
+                    <ScrollViewer x:Name="DetailsPage" Grid.Row="1">
+                        <StackPanel Padding="16,12,16,20" Spacing="10">
+                            <TextBlock Text="Label" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            <TextBox x:Name="NameBox" Header="Name" LostFocus="OnLabelCommit" />
+                            <TextBox x:Name="VersionBox" Header="Version" PlaceholderText="e.g. Original release" LostFocus="OnLabelCommit" />
+                            <TextBox x:Name="YearBox" Header="Release year" MaxLength="4" LostFocus="OnLabelCommit" />
+                            <ComboBox x:Name="KindBox" Header="This audio is" HorizontalAlignment="Stretch" SelectionChanged="OnKindChanged">
+                                <ComboBoxItem Content="Not specified" />
+                                <ComboBoxItem Content="Full mix" />
+                                <ComboBoxItem Content="Vocal stem" />
+                            </ComboBox>
+                            <TextBox x:Name="NotesBox" Header="Notes" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" LostFocus="OnLabelCommit" />
+                            <TextBlock Text="File" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
+                            <Grid x:Name="FactsGrid" ColumnSpacing="12" RowSpacing="6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                            </Grid>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Analysis: what was sung, what the indicators suggest, and the isolated vocals. -->
+                    <ScrollViewer x:Name="AnalysisPage" Grid.Row="1" Visibility="Collapsed">
+                        <StackPanel Padding="16,12,16,20" Spacing="10">
+                            <TextBlock Text="Pitch" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                            <ProgressBar x:Name="AnalysisProgressBar" Visibility="Collapsed" />
+                            <TextBlock x:Name="PitchStatusText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                            <Grid x:Name="PitchFactsGrid" ColumnSpacing="12" RowSpacing="6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                            </Grid>
+                            <TextBlock x:Name="CautionText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}" Visibility="Collapsed" />
+
+                            <TextBlock x:Name="IndicatorsHeading" Text="Pitch-Correction Indicators" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" Visibility="Collapsed" />
+                            <StackPanel x:Name="IndicatorsPanel" Spacing="10" />
+
+                            <TextBlock Text="Vocals" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
+                            <StackPanel x:Name="IsolationProgressPanel" Spacing="8" Visibility="Collapsed">
+                                <TextBlock x:Name="IsolationStageText" TextWrapping="Wrap" />
+                                <ProgressBar x:Name="IsolationProgressBar" />
+                                <Button Content="Cancel" Click="OnCancelIsolation" />
+                            </StackPanel>
+                            <StackPanel x:Name="StemPanel" Spacing="8" Visibility="Collapsed">
+                                <TextBlock x:Name="StemText" TextWrapping="Wrap" />
+                                <ToggleSwitch x:Name="AnalyseVocalsSwitch" Header="Analyse the isolated vocals" Toggled="OnAnalyseVocalsToggled" />
+                                <ToggleSwitch x:Name="ListenVocalsSwitch" Header="Listen to the isolated vocals" Toggled="OnListenVocalsToggled" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button Content="Export…" Click="OnExportVocals" />
+                                    <Button Content="Remove" Click="OnRemoveVocals" />
+                                </StackPanel>
+                            </StackPanel>
+                            <StackPanel x:Name="OfferPanel" Spacing="8">
+                                <TextBlock x:Name="IsolationErrorText" TextWrapping="Wrap" Foreground="{ThemeResource SystemFillColorCautionBrush}" Visibility="Collapsed" />
+                                <ComboBox x:Name="ModelBox" Header="Model" HorizontalAlignment="Stretch" SelectionChanged="OnModelChanged" />
+                                <TextBlock x:Name="ModelInfoText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}" />
+                                <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <Button x:Name="IsolateButton" Content="Isolate Vocals" Click="OnIsolate" Style="{ThemeResource AccentButtonStyle}" />
+                                    <Button x:Name="DeleteModelButton" Content="Delete Model" Click="OnDeleteModel" Visibility="Collapsed" />
+                                </StackPanel>
+                                <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}"
+                                           Text="Isolating the vocals of a full song first makes the pitch analysis far more dependable. It runs entirely on this PC." />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+
+                    <!-- Compare: two versions of a recording, lined up. -->
+                    <ScrollViewer x:Name="ComparePage" Grid.Row="1" Visibility="Collapsed">
+                        <StackPanel Padding="16,12,16,20" Spacing="10">
+                            <StackPanel x:Name="CompareEmptyPanel" Spacing="10">
+                                <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Add a second version of this recording — a remaster, a live take released as studio, a different pressing — to line the two up and see where their pitch differs." />
+                                <Button Content="Add Recording to Compare…" Click="OnAddRecording" />
+                            </StackPanel>
+                            <StackPanel x:Name="ComparePanel" Spacing="10" Visibility="Collapsed">
+                                <TextBlock Text="Recordings" Style="{ThemeResource BodyStrongTextBlockStyle}" />
+                                <StackPanel x:Name="CompareRecordingsPanel" Spacing="6" />
+                                <Button x:Name="RemoveOtherButton" Content="Remove the Other Recording" Click="OnRemoveOtherRecording" />
+                                <TextBlock Text="Alignment" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
+                                <TextBlock x:Name="AlignmentStatusText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <Grid x:Name="AlignmentGrid" ColumnSpacing="12" RowSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                </Grid>
+                                <TextBlock Text="Pitch Differences" Style="{ThemeResource BodyStrongTextBlockStyle}" Margin="0,12,0,0" />
+                                <TextBlock x:Name="DifferencesStatusText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <Grid x:Name="DifferencesGrid" ColumnSpacing="12" RowSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                </Grid>
+                                <StackPanel x:Name="RegionsPanel" Spacing="2" />
+                                <TextBlock x:Name="RegionsNoteText" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Style="{ThemeResource CaptionTextBlockStyle}" Visibility="Collapsed"
+                                           Text="Passages where B is more than 25 cents from A, beyond the overall shift. Times are on recording A. Positive means B is higher." />
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
             </Grid>
         </Grid>
     </Grid>

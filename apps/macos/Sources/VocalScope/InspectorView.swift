@@ -1,9 +1,34 @@
 import SwiftUI
 import VocalScopeCore
 
+/// The panel beside the timeline: the recording's details, its pitch
+/// analysis, and its comparison with another version.
+struct InspectorView: View {
+    @EnvironmentObject private var model: AppModel
+    let recording: Recording
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Inspector page", selection: $model.inspectorTab) {
+                ForEach(InspectorTab.allCases, id: \.self) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            Divider()
+            switch model.inspectorTab {
+            case .details: DetailsInspector(recording: recording)
+            case .analysis: AnalysisInspector(recording: recording)
+            case .compare: CompareInspector(recording: recording)
+            }
+        }
+    }
+}
+
 /// Details of the active recording: how the user labels it (editable, saved
 /// in the project) and what the file is (read-only, exactly as found).
-struct InspectorView: View {
+struct DetailsInspector: View {
     @EnvironmentObject private var model: AppModel
     let recording: Recording
 

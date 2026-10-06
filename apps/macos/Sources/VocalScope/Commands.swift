@@ -2,7 +2,8 @@ import SwiftUI
 import VocalScopeCore
 
 /// The menu bar. Standard items (About, Settings, Edit, Window, Quit) come
-/// from the system; these add the document, playback and view commands.
+/// from the system; these add the document, analysis, playback and view
+/// commands.
 struct AppCommands: Commands {
     @ObservedObject var model: AppModel
 
@@ -30,9 +31,52 @@ struct AppCommands: Commands {
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(!model.hasProject)
             Divider()
+            Menu("Export") {
+                Group {
+                    Button("Report…") { model.export(.report) }
+                        .keyboardShortcut("e")
+                    Button("Pitch Curve as CSV…") { model.export(.pitchCsv) }
+                    Button("Notes as CSV…") { model.export(.notesCsv) }
+                    Button("Notes as MIDI…") { model.export(.midi) }
+                    Button("Everything as JSON…") { model.export(.json) }
+                }
+                .disabled(model.analysis == nil)
+                Divider()
+                Button("Isolated Vocals as WAV…") { model.exportVocals() }
+                    .disabled(model.activeRuntime?.vocalStem == nil)
+            }
+            .disabled(!model.hasProject)
+            Divider()
             Button("Close Project") { model.closeProject() }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
                 .disabled(!model.hasProject)
+        }
+
+        CommandMenu("Analysis") {
+            Group {
+                Toggle("Show Pitch on the Timeline", isOn: $model.pitchShown)
+                    .keyboardShortcut("p", modifiers: [.command, .option])
+                Button("Analyse Again") { model.reanalyse() }
+                    .disabled(model.activeRuntime?.waveformStatus != .ready)
+                Divider()
+                Button("Isolate Vocals…") {
+                    model.inspectorTab = .analysis
+                    model.inspectorShown = true
+                }
+                .disabled(model.isolationIsRunning)
+                Toggle("Listen to the Isolated Vocals", isOn: Binding(
+                    get: { model.session.listeningToVocals },
+                    set: { model.setListeningToVocals($0) }))
+                    .keyboardShortcut("l", modifiers: [.command, .option])
+                    .disabled(!model.session.recordings.contains { $0.vocalStem != nil })
+                Divider()
+                Button("Add Recording to Compare…") { model.addRecordingPanel() }
+                    .disabled((model.session.project?.recordings.count ?? 0) != 1)
+                Button("Switch to the Other Recording") { model.switchRecording() }
+                    .keyboardShortcut("x", modifiers: [.command, .option])
+                    .disabled(model.session.comparison == nil)
+            }
+            .disabled(!model.hasProject)
         }
 
         CommandMenu("Playback") {

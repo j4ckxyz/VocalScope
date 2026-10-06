@@ -5,21 +5,25 @@ investigate whether a vocal has been pitch-corrected. It is a native app on
 each platform — SwiftUI on macOS, WinUI on Windows — over one shared core,
 and it runs entirely on your own computer: audio is never uploaded.
 
-![VocalScope on macOS with a recording open](docs/images/macos-main.png)
+![VocalScope on macOS comparing two versions of a recording](docs/images/macos-compare.png)
 
-> **Status: v0.1.0, the foundation.** Today VocalScope opens, plays and
-> displays recordings and keeps your notes about them. The analysis itself —
-> pitch tracking, vocal isolation, correction indicators, A/B comparison —
-> is not built yet; see [Roadmap](#roadmap).
+> **Status: v0.6.0.** VocalScope tracks the pitch of a recording, finds its
+> notes, isolates the vocals of a full song, measures four pitch-correction
+> indicators, lines two versions of a recording up to compare them, and
+> exports all of it.
 >
-> When the analysis arrives it will report *indicators* and *estimates*.
-> Pitch analysis alone cannot prove that a particular tool such as Auto-Tune
-> was used, and VocalScope will never claim that it can.
+> What it reports are *indicators* and *estimates*. Pitch analysis alone
+> cannot prove that a particular tool such as Auto-Tune was used, and
+> VocalScope never claims that it can. The thresholds behind the indicators
+> are conservative rules of thumb that have so far been checked against
+> synthetic test recordings only, not against a body of real, known-corrected
+> and known-uncorrected vocals; see [Roadmap](#roadmap).
 
 ## Contents
 
 - [Install](#install)
 - [Using VocalScope](#using-vocalscope)
+- [What the indicators mean](#what-the-indicators-mean)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [macOS and Windows differences](#macos-and-windows-differences)
 - [Roadmap](#roadmap)
@@ -97,18 +101,22 @@ same file opens instantly.
 
 ### 2. Look around the timeline
 
-![The main window on Windows](docs/images/windows-main.png)
+![A recording with its pitch analysis on macOS](docs/images/macos-main.png)
 
-The window has three parts:
+The window has four parts:
 
 - **Overview** (the thin strip at the top): the whole recording. When you
   are zoomed in, a highlighted box shows which part you are looking at; drag
   in the overview to move it.
-- **Waveform** (the large area), with a time ruler above it. The coloured
-  vertical line is the playhead.
-- **Details** (the panel on the right): your labels for the recording, and
-  the facts about the file. Hide or show it with the button at the top
-  right.
+- **Pitch** (the large area), under a time ruler: the pitch curve over a grid
+  of note names, with each detected note drawn as a bar and labelled with
+  its name and how many cents it is from that note. The coloured vertical
+  line is the playhead. Hide the pitch with the toolbar button if you only
+  want the waveform.
+- **Waveform** (below the pitch).
+- **The panel on the right**, with three pages: **Details** (your labels and
+  the facts about the file), **Analysis** and **Compare**. Hide or show it
+  with the button at the top right.
 
 To move around:
 
@@ -142,11 +150,97 @@ embedded tags. If the two channels of a stereo file are identical it says
 so, because that file is effectively mono. Anything the file does not state
 is shown as “—” rather than guessed.
 
-### 5. Save a project
+### 5. Read the pitch
 
-Labels and notes are kept in a project file. Choose **File › Save Project**
-and VocalScope writes a small `.vocalscope` file. It *refers* to your audio
-rather than copying it, so it stays tiny.
+A second or so after a recording opens, its pitch curve appears. Nothing
+needs to be started; a four-minute song takes under a second and the result
+is remembered. On macOS, moving the pointer over the timeline shows the time,
+the note and the frequency under it.
+
+The **Analysis** page lists how long there is a pitch for, how many notes
+were found, the range, the median pitch, and the recording's overall tuning
+(where its notes cluster relative to A4 = 440 Hz — an old tape transfer can
+easily sit 20 cents away, and VocalScope allows for that rather than calling
+every note flat).
+
+Pitch tracking follows *one* voice. On a full song the accompaniment gets in
+the way, and the Analysis page says so. For a dependable result, isolate the
+vocals first.
+
+### 6. Isolate the vocals of a full song
+
+On the **Analysis** page, under **Vocals**, choose a model and then
+**Isolate Vocals**. VocalScope suggests the model that suits your computer:
+
+| Model | Download | Best for | Licence |
+| --- | --- | --- | --- |
+| Kim Vocal 2 | 67 MB | Best quality; 8 GB of memory and six or more cores (it uses about 2.5 GB while running) | Not stated by its publisher |
+| UVR-MDX-NET Voc FT | 67 MB | An alternative of the same size | Not stated by its publisher |
+| KUIELab MDX-Net B | 30 MB | Older or lower-memory computers; about three times faster | MIT |
+
+No model comes with the app. The first time you use one, VocalScope shows
+its size and licence and asks before downloading it; the download is checked
+against a known checksum before it is used. This is the only thing VocalScope
+ever uses the internet for, and your audio never leaves your computer.
+
+Isolation takes a while — on a fanless 8 GB laptop, about 75 seconds for a
+four-minute song with the large model and 25 with the small one — and shows
+its progress. You can
+cancel it. Afterwards:
+
+- the pitch analysis is redone from the isolated vocals (switch
+  **Analyse the isolated vocals** off to go back);
+- **Listen to the isolated vocals** plays them instead of the full song,
+  from the same place, so you can judge how clean the isolation is;
+- **Export…** saves the vocals as a WAV file.
+
+Isolated vocals are kept, so reopening the same file later finds them
+straight away. Isolation is good but not perfect: backing vocals, doubled
+leads and heavy reverb can remain, and they affect the pitch curve.
+
+### 7. Compare two versions
+
+To compare, say, an original release with a remaster, open one and choose
+**Analysis › Add Recording to Compare…** for the other. VocalScope lines the
+two up from their loudness — finding how much later one starts and, for tape
+or vinyl transfers, any constant difference in speed — and tells you how
+well they match. Then:
+
+- the other version's pitch curve is drawn in orange over the one you are
+  looking at, and passages where they differ by more than 25 cents are
+  shaded;
+- **A** and **B** in the toolbar (or the **X** key) switch which version is
+  shown and heard, at the matching moment and without stopping playback;
+- the **Compare** page gives the offset, the speed difference, the overall
+  pitch shift, how often the two agree within 10 cents, and a list of the
+  passages that differ; click one to go to it.
+
+![Two versions compared on macOS](docs/images/macos-compare.png)
+
+This lines up two releases of *one performance*. It does not match two
+different performances, and says so when the recordings do not line up.
+
+### 8. Export
+
+**File › Export** writes what VocalScope found:
+
+| Export | Contains |
+| --- | --- |
+| Report (`.md`) | A plain-language summary: the recording, the pitch facts, the indicators with their explanations, the comparison, and the notes |
+| Pitch curve (`.csv`) | One row per 10 ms: time, frequency, note, cents, confidence, level |
+| Notes (`.csv`) | One row per note: timing, pitch, cents from the scale, steadiness, vibrato, transition time |
+| Notes (`.mid`) | The notes as a MIDI file, timed exactly to the recording |
+| Everything (`.json`) | All of the above for other software, with spelled-out field names |
+| Isolated vocals (`.wav`) | The vocals as audio |
+
+Every export that includes the indicators includes their caveat.
+
+### 9. Save a project
+
+Labels, notes and which recordings are being compared are kept in a project
+file. Choose **File › Save Project** and VocalScope writes a small
+`.vocalscope` file. It *refers* to your audio rather than copying it, and
+analyses are made again from the audio when needed, so it stays tiny.
 
 If you later move or rename the audio, the project still opens: VocalScope
 tells you the file is missing and offers **Locate File…**, and your labels
@@ -163,6 +257,36 @@ folder.
 
 The Windows app does not have a settings window yet. It follows your Windows
 light or dark mode and plays through the default output device.
+
+## What the indicators mean
+
+The **Analysis** page shows four measurements, each read against what
+unprocessed singing usually looks like:
+
+| Indicator | What is measured | Unprocessed singing | Points towards correction |
+| --- | --- | --- | --- |
+| Closeness to the scale | How far note centres sit from exact semitones, allowing for the recording's overall tuning | Typically 10–25 cents away | Under about 6 cents |
+| Steadiness of held notes | Irregular pitch movement within a held note, not counting vibrato or steady drift | Several cents of wander | Under about 3 cents: notes that are almost perfectly flat |
+| Vibrato | Whether long notes carry a regular wobble, and its speed and depth | Often present, 4–8 Hz and 20 cents or more deep | Never, alone: plenty of styles are sung without vibrato |
+| Movement between notes | How long the pitch takes to get from one joined note to the next | Tens of milliseconds of slide | Under about 18 ms: near-instant jumps |
+
+Each is reported as *typical of unprocessed singing*, *inconclusive*,
+*consistent with pitch correction*, or *not enough data*, with the figure
+and a sentence on how to read it.
+
+How much weight to put on them:
+
+- They describe the pitch curve. They cannot tell *why* it looks as it does.
+  A very accurate singer and light correction can look the same; heavy
+  correction can be disguised by later processing; a synthesiser or a
+  heavily comped vocal will read as "corrected".
+- They are only as good as the pitch curve. On a full mix that has not been
+  isolated, or on imperfectly isolated vocals, treat them with suspicion.
+- The thresholds are rules of thumb, kept in one place in the source
+  (`core/src/analysis/indicators.rs`) so they can be reviewed and revised.
+- Comparing two versions of the same performance is much stronger evidence
+  than any indicator on one recording: if a held note sags on the 1976
+  pressing and is level on the remaster, something changed.
 
 ## Keyboard shortcuts
 
@@ -183,6 +307,10 @@ light or dark mode and plays through the default output device.
 | Zoom in / out | ⌘+ / ⌘− | Ctrl++ / Ctrl+− |
 | Zoom to fit | ⌘0 | Ctrl+0 |
 | Show or hide details | ⌥⌘I | Ctrl+I |
+| Show or hide the pitch | ⌥⌘P | Ctrl+Shift+P |
+| Listen to the isolated vocals | ⌥⌘L | Ctrl+L |
+| Switch to the other recording | X | X |
+| Export a report | ⌘E | Ctrl+E |
 | Settings | ⌘, | — |
 
 Single-key shortcuts such as Space are ignored while you are typing in a
@@ -197,35 +325,52 @@ further along:
 | | macOS | Windows |
 | --- | --- | --- |
 | Open, play, seek, zoom, label, projects, recent files | Yes | Yes |
+| Pitch curve, notes, indicators | Yes | Yes |
+| Vocal isolation, A/B comparison, export | Yes | Yes |
 | Settings window | Yes | Not yet |
 | Choose audio output device | Yes | Not yet (uses the default) |
-| Hover read-out of the time under the pointer | Yes | Not yet |
-| Tested by hand | Launch and file-open only | Launch and file-open only, on a build server |
+| Hover read-out of the time and pitch under the pointer | Yes | Not yet |
+| Click a differing passage to go to it | Yes | Yes |
+| Tested by hand | Launched and photographed with recordings open; controls not clicked through | Not yet run with the analysis features |
 
-That last row matters: the Windows app is built and launched automatically
-on a build server for every change, but nobody has used it on a real PC yet.
-The macOS app has only been launched and shown a file; its buttons, menus
-and dialogs have not been clicked through. Please
-[report problems](https://github.com/j4ckxyz/VocalScope/issues).
+That last row matters. All of the analysis lives in the shared core and is
+covered by its tests, including one that downloads a real model and isolates
+with it. The interfaces are another matter: the macOS app has been launched
+and photographed showing an analysis and a comparison, but its buttons,
+menus and dialogs have not been clicked through; the Windows app's new
+screens have been checked by the compiler only, and nobody has used them.
+Please [report problems](https://github.com/j4ckxyz/VocalScope/issues).
 
 ## Roadmap
 
-| Version | Adds |
+| Version | Added |
 | --- | --- |
-| **0.1** (this one) | Open, play and display recordings; labels; projects |
+| 0.1 | Open, play and display recordings; labels; projects |
 | 0.2 | Pitch tracking: the pitch curve, detected notes, deviation in cents |
 | 0.3 | Vocal isolation from a full song, with models chosen to suit your hardware |
 | 0.4 | Pitch-correction indicators: stability, natural variation, vibrato, transitions |
 | 0.5 | A/B comparison of two versions of a recording, aligned in time |
-| 0.6 | Export: JSON, CSV, MIDI and a readable report |
+| **0.6** (this one) | Export: JSON, CSV, MIDI and a readable report |
+
+What comes next, roughly in order of how much it matters:
+
+- **Calibrate the indicators on real recordings.** Their thresholds have been
+  checked against synthetic "natural" and "corrected" test vocals, which
+  shows the measurements work, not that the cut-offs are right for real
+  singers and real correction. That needs a set of vocals whose history is
+  known.
+- Use the Windows app and the macOS app by hand, and fix what that finds.
+- Faster isolation using the graphics processor (it runs on the CPU today).
+- A settings window and hover read-out on Windows; signed builds.
 
 ## Building from source
 
 ### macOS
 
 Needs macOS 14 or later, the Xcode Command Line Tools
-(`xcode-select --install`) and [Rust](https://rustup.rs). Full Xcode is not
-needed.
+(`xcode-select --install`) and [Rust](https://rustup.rs) 1.88 or later. Full
+Xcode is not needed. The first build downloads ONNX Runtime, which the vocal
+isolation runs on, and links it into the app.
 
 ```sh
 apps/macos/build.sh
@@ -256,8 +401,19 @@ These are the same steps the build server runs
 ```sh
 cargo test                                # the shared core
 cargo test -- --ignored playback_smoke    # plays silently through the real audio device
+cargo test -- --ignored isolation_smoke   # downloads a 30 MB model and isolates with it
 uv run scripts/make_test_audio.py --long  # synthetic test recordings (not committed)
 scripts/bench.sh --save my-change         # macOS: launch time, memory and CPU
+scripts/macos-screenshots.sh              # macOS: the pictures in this README
+```
+
+The test recordings include a one-minute pair, `synthetic-vocal-natural` and
+`synthetic-vocal-corrected`, for trying the indicators and the comparison.
+Two small command-line tools help when working on the analysis:
+
+```sh
+cargo run --release --example analyse -- song.flac           # pitch summary and indicators
+cargo run --release --example isolate_vocals -- song.flac model.onnx kim_vocal_2 vocals.wav
 ```
 
 ## How it is built
@@ -267,7 +423,7 @@ view anywhere.
 
 | Part | Where | Written in |
 | --- | --- | --- |
-| Core: decoding, playback, waveforms, projects, storage, timeline maths | `core/` | Rust |
+| Core: decoding, playback, waveforms, pitch analysis, vocal isolation, comparison, export, projects, storage, timeline maths | `core/` | Rust |
 | macOS app | `apps/macos/` | Swift (SwiftUI and AppKit) |
 | Windows app | `apps/windows/` | C# (WinUI 3) |
 
@@ -279,11 +435,17 @@ once. More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md); measurements in
 
 ## Privacy
 
-This version makes no network connections at all. Later versions will use
-the network only to download analysis models you ask for, and to check for
-updates. Logs stay on your computer and never contain audio.
+Everything is analysed on your own computer. VocalScope makes exactly one
+kind of network connection: downloading a vocal-isolation model from GitHub,
+when you ask for one and after it has shown you what it is about to fetch.
+Your audio, your projects and your results are never sent anywhere. Logs
+stay on your computer and never contain audio.
 
 ## License
 
 MIT — see [LICENSE](LICENSE). Third-party components keep their own
-licenses; notably the Symphonia audio decoders are MPL-2.0.
+licenses; notably the Symphonia audio decoders are MPL-2.0 and ONNX Runtime
+is MIT. The vocal-isolation models are not part of VocalScope and are not
+distributed with it; each is downloaded from its publisher at your request,
+and the app shows the licence its publisher states for it, including when
+none is stated.

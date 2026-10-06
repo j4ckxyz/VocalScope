@@ -43,6 +43,18 @@ symphonia = { version = "0.5", default-features = false, features = [
     "opt-simd",
 ] }
 
+# FFTs for pitch tracking, alignment and the separation models' spectrograms.
+realfft = "3.5"
+# Writes isolated-vocal stems.
+hound = "3.5"
+# Runs the vocal-separation models. ONNX Runtime itself is fetched as a
+# prebuilt static library at build time and linked in, so the apps still
+# ship as one self-contained binary.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "download-binaries", "tls-native", "api-22"] }
+# Downloads a separation model when the user asks for one. Nothing else in
+# the application touches the network.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+sha2 = "0.10"
+
 [dev-dependencies]
 tempfile = "3"
-hound = "3.5"

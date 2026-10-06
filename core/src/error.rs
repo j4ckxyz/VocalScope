@@ -45,6 +45,24 @@ pub enum AppError {
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 
+    #[error("the analysis of this recording is not available ({0})")]
+    AnalysisUnavailable(String),
+
+    #[error("download failed ({0})")]
+    Network(String),
+
+    #[error("the downloaded model did not match its published checksum ({0})")]
+    ModelCorrupt(String),
+
+    #[error("separation model not available: {0}")]
+    ModelUnavailable(String),
+
+    #[error("vocal isolation failed ({0})")]
+    Separation(String),
+
+    #[error("another task is already running ({0})")]
+    Busy(String),
+
     #[error("{0}")]
     InvalidInput(String),
 
@@ -86,6 +104,12 @@ impl AppError {
             AppError::RecordingNotFound(_) => "recording_not_found",
             AppError::Database(_) => "database_error",
             AppError::Io(_) => "io_error",
+            AppError::AnalysisUnavailable(_) => "analysis_unavailable",
+            AppError::Network(_) => "network_error",
+            AppError::ModelCorrupt(_) => "model_corrupt",
+            AppError::ModelUnavailable(_) => "model_unavailable",
+            AppError::Separation(_) => "separation_failed",
+            AppError::Busy(_) => "busy",
             AppError::InvalidInput(_) => "invalid_input",
             AppError::Cancelled => "cancelled",
             AppError::Internal(_) => "internal_error",
@@ -171,6 +195,36 @@ impl AppError {
                     _ => "The file could not be read or written.".to_string(),
                 },
                 Some("Check the file's location and permissions, and that your disk is not full."),
+            ),
+            AppError::AnalysisUnavailable(_) => (
+                "The pitch analysis is not ready",
+                "This needs the recording's pitch analysis, which has not finished or could not be made.".to_string(),
+                Some("Wait for the analysis to finish, or choose Analysis › Analyse Again."),
+            ),
+            AppError::Network(_) => (
+                "The download did not finish",
+                "VocalScope could not download the model. Nothing was changed.".to_string(),
+                Some("Check your internet connection and try again."),
+            ),
+            AppError::ModelCorrupt(_) => (
+                "The downloaded model was damaged",
+                "The file that arrived does not match the one that was published, so it was discarded.".to_string(),
+                Some("Try the download again."),
+            ),
+            AppError::ModelUnavailable(_) => (
+                "That model is not available",
+                "The vocal isolation model has not been downloaded, or is not one this version of VocalScope knows.".to_string(),
+                Some("Choose a model and download it first."),
+            ),
+            AppError::Separation(_) => (
+                "The vocals could not be isolated",
+                "Something went wrong while running the vocal isolation model. Your recording is unchanged.".to_string(),
+                Some("Try again, or try the smaller model if this computer is short of memory."),
+            ),
+            AppError::Busy(what) => (
+                "Something else is still running",
+                format!("VocalScope is already {what}."),
+                Some("Wait for it to finish, or cancel it first."),
             ),
             AppError::InvalidInput(message) => ("That didn't work", message.clone(), None),
             AppError::Cancelled => (

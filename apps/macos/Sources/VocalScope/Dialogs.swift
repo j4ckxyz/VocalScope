@@ -31,9 +31,9 @@ enum Dialogs {
         return panel.runModal() == .OK ? panel.url : nil
     }
 
-    static func chooseSaveLocation(name: String, type: UTType, directory: URL?) -> URL? {
+    static func chooseSaveLocation(title: String, name: String, type: UTType, directory: URL?) -> URL? {
         let panel = NSSavePanel()
-        panel.title = "Save Project"
+        panel.title = title
         panel.nameFieldStringValue = name
         panel.allowedContentTypes = [type]
         panel.canCreateDirectories = true

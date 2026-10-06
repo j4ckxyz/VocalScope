@@ -22,6 +22,16 @@ private final class ObserverBridge: AppObserver, @unchecked Sendable {
         }
     }
 
+    func analysisProgress(recordingId: Uuid, fraction: Float?) {
+        Task { @MainActor [weak self] in
+            self?.model?.apply(analysisProgress: fraction, recordingId: recordingId)
+        }
+    }
+
+    func isolationChanged(status: IsolationStatus) {
+        Task { @MainActor [weak self] in self?.model?.apply(isolation: status) }
+    }
+
     func recentsChanged(recents: [RecentItem]) {
         Task { @MainActor [weak self] in self?.model?.recents = recents }
     }
@@ -51,9 +61,24 @@ final class AppModel: ObservableObject {
     @Published fileprivate(set) var recents: [RecentItem]
     @Published private(set) var settings: CoreSettings
     @Published private(set) var waveformProgress: Float?
+    /// The finished pitch analysis of the active recording.
+    @Published private(set) var analysis: AnalysisView?
+    @Published private(set) var analysisProgress: Float?
+    @Published private(set) var isolation: IsolationStatus
+    @Published private(set) var models: [SeparationModel]
     @Published var inspectorShown: Bool {
         didSet { UserDefaults.standard.set(inspectorShown, forKey: "inspectorShown") }
     }
+    @Published var inspectorTab: InspectorTab {
+        didSet { UserDefaults.standard.set(inspectorTab.rawValue, forKey: "inspectorTab") }
+    }
+    /// Draw the pitch curve and notes over the timeline.
+    @Published var pitchShown: Bool {
+        didSet { UserDefaults.standard.set(pitchShown, forKey: "pitchShown") }
+    }
+    /// What the analysis on screen was made from; when this changes the
+    /// analysis is fetched again.
+    private var analysisKey = ""
 
     /// The timeline view registers itself so zoom commands can reach it
     /// without routing every scroll event through SwiftUI state.
@@ -91,7 +116,11 @@ final class AppModel: ObservableObject {
         playback = core.playbackStatus()
         recents = core.recents()
         settings = core.settings()
+        isolation = core.isolationStatus()
+        models = core.separationModels()
         inspectorShown = UserDefaults.standard.object(forKey: "inspectorShown") as? Bool ?? true
+        inspectorTab = InspectorTab(rawValue: UserDefaults.standard.string(forKey: "inspectorTab") ?? "") ?? .details
+        pitchShown = UserDefaults.standard.object(forKey: "pitchShown") as? Bool ?? true
         bridge.model = self
         applyAppearance()
         installKeyMonitor()
@@ -143,6 +172,55 @@ final class AppModel: ObservableObject {
         return parts.joined(separator: " · ")
     }
 
+    /// The recording being compared with the active one, if there is one.
+    var otherRecording: Recording? {
+        guard let comparison = session.comparison, let active = session.activeRecordingId else { return nil }
+        let other = comparison.referenceRecordingId == active
+            ? comparison.otherRecordingId : comparison.referenceRecordingId
+        return session.project?.recordings.first { $0.id == other }
+    }
+
+    /// "A" for the first recording of a compared pair, "B" for the second.
+    func letter(for recordingId: Uuid) -> String {
+        session.comparison?.otherRecordingId == recordingId ? "B" : "A"
+    }
+
+    /// What the timeline should draw about pitch, or `nil` when the pitch
+    /// is hidden or not ready.
+    var pitchLayer: PitchLayer? {
+        guard pitchShown, let analysis, let active = session.activeRecordingId,
+              analysis.recordingId == active
+        else { return nil }
+        var differences: [ClosedRange<Double>] = []
+        var compared = false
+        var comparisonKey = ""
+        if let comparison = session.comparison, let alignment = comparison.alignment {
+            let isReference = comparison.referenceRecordingId == active
+            let otherId = isReference ? comparison.otherRecordingId : comparison.referenceRecordingId
+            let other = session.recordings.first { $0.recordingId == otherId }
+            compared = other?.analysisStatus == .ready
+            if let pitch = comparison.pitch {
+                // Regions are on the reference's timeline; move them onto
+                // the other's when that is the one on screen.
+                let place: (Double) -> Double = isReference
+                    ? { $0 } : { alignment.offsetSeconds + alignment.speedRatio * $0 }
+                differences = pitch.regions.map { place($0.startSeconds)...place($0.endSeconds) }
+            }
+            comparisonKey = "\(otherId)|\(alignment.offsetSeconds)|\(alignment.speedRatio)|\(compared)|\(other?.analysedIsolatedVocals ?? false)|\(comparison.pitch?.regions.count ?? -1)|\(comparison.pitch?.comparedSeconds ?? -1)"
+        }
+        return PitchLayer(
+            notes: analysis.notes,
+            low: Double(analysis.displayLowMidi),
+            high: Double(analysis.displayHighMidi),
+            differences: differences,
+            compared: compared,
+            key: "\(analysisKey)#\(analysis.notes.count)#\(comparisonKey)")
+    }
+
+    var isolationIsRunning: Bool {
+        isolation.stage != .idle && isolation.stage != .failed
+    }
+
     /// The file the title bar's proxy icon stands for.
     var documentURL: URL? {
         if let path = session.projectPath { return URL(fileURLWithPath: path) }
@@ -157,7 +235,39 @@ final class AppModel: ObservableObject {
     fileprivate func apply(session: SessionView) {
         self.session = session
         if activeRuntime?.waveformStatus != .pending { waveformProgress = nil }
+        if activeRuntime?.analysisStatus != .pending { analysisProgress = nil }
         window?.isDocumentEdited = session.dirty
+        refreshAnalysis()
+    }
+
+    /// Fetches the active recording's analysis when a different one has
+    /// become available (or none is any more).
+    private func refreshAnalysis() {
+        guard let runtime = activeRuntime, runtime.analysisStatus == .ready,
+              let recording = activeRecording
+        else {
+            analysisKey = ""
+            if analysis != nil { analysis = nil }
+            return
+        }
+        // The source kind is part of the key because it decides the caution.
+        let key = "\(runtime.recordingId)|\(runtime.analysedIsolatedVocals)|\(recording.source.kind)|\(recording.source.path)|\(runtime.vocalStem?.modelId ?? "")"
+        guard key != analysisKey || analysis == nil else { return }
+        analysisKey = key
+        analysis = core.analysis(recordingId: runtime.recordingId)
+    }
+
+    fileprivate func apply(analysisProgress fraction: Float?, recordingId: Uuid) {
+        if recordingId == session.activeRecordingId, activeRuntime?.analysisStatus == .pending {
+            analysisProgress = fraction
+        }
+    }
+
+    fileprivate func apply(isolation status: IsolationStatus) {
+        let finished = isolationIsRunning && (status.stage == .idle || status.stage == .failed)
+        isolation = status
+        // A finished job may have installed a model.
+        if finished { models = core.separationModels() }
     }
 
     fileprivate func apply(playback: PlaybackStatus) {
@@ -214,6 +324,7 @@ final class AppModel: ObservableObject {
         let step = modifiers.contains(.shift) ? 1.0 : Self.skipSeconds
 
         switch event.keyCode {
+        case 7 where session.comparison != nil: switchRecording()   // X
         case 49: togglePlayback()                       // Space
         case 36, 115: seek(to: 0)                       // Return, Home
         case 119: seek(to: duration)                    // End
@@ -341,7 +452,8 @@ final class AppModel: ObservableObject {
         guard hasProject else { return false }
         let directory = session.projectPath.map { URL(fileURLWithPath: $0).deletingLastPathComponent() }
             ?? settings.general.defaultProjectDirectory.map { URL(fileURLWithPath: $0) }
-        guard let url = Dialogs.chooseSaveLocation(name: documentName, type: Self.projectType, directory: directory)
+        guard let url = Dialogs.chooseSaveLocation(
+            title: "Save Project", name: documentName, type: Self.projectType, directory: directory)
         else { return false }
         return attempt { self.apply(session: try self.core.saveProject(path: url.path)) }
     }
@@ -390,6 +502,158 @@ final class AppModel: ObservableObject {
             Dialogs.present(error: error)
             return false
         }
+    }
+
+    // MARK: - Analysis and export
+
+    /// Forgets the analysis on screen so the next session update fetches it
+    /// afresh.
+    private func invalidateAnalysis() {
+        analysisKey = ""
+    }
+
+    func reanalyse() {
+        guard let id = session.activeRecordingId else { return }
+        invalidateAnalysis()
+        attempt { self.apply(session: try self.core.reanalyse(recordingId: id)) }
+    }
+
+    func setAnalyseIsolatedVocals(_ useVocals: Bool) {
+        guard let id = session.activeRecordingId else { return }
+        invalidateAnalysis()
+        attempt {
+            self.apply(session: try self.core.setAnalysisSource(
+                recordingId: id, source: useVocals ? .isolatedVocalsWhenAvailable : .original))
+        }
+    }
+
+    func export(_ format: ExportFormat) {
+        guard let id = session.activeRecordingId else { return }
+        let name = core.suggestedExportName(recordingId: id, format: format)
+        let type = UTType(filenameExtension: exportFileExtension(format: format)) ?? .data
+        guard let url = Dialogs.chooseSaveLocation(
+            title: "Export", name: name, type: type, directory: exportDirectory)
+        else { return }
+        let path = url.path
+        inBackground({ try $0.exportAnalysis(recordingId: id, format: format, path: path) })
+    }
+
+    func exportVocals() {
+        guard let id = session.activeRecordingId, let recording = activeRecording else { return }
+        let name = ((recording.audio.fileName as NSString).deletingPathExtension) + " vocals.wav"
+        guard let url = Dialogs.chooseSaveLocation(
+            title: "Export Vocals", name: name, type: .wav, directory: exportDirectory)
+        else { return }
+        let path = url.path
+        inBackground({ try $0.exportVocalStem(recordingId: id, path: path) })
+    }
+
+    /// Exports start next to the project, or next to the audio.
+    private var exportDirectory: URL? {
+        if let path = session.projectPath { return URL(fileURLWithPath: path).deletingLastPathComponent() }
+        if let path = activeRecording?.source.path { return URL(fileURLWithPath: path).deletingLastPathComponent() }
+        return nil
+    }
+
+    // MARK: - Vocal isolation
+
+    /// Isolates the active recording's vocals with `model`, asking first if
+    /// that means downloading it.
+    func isolateVocals(with model: SeparationModel) {
+        guard let id = session.activeRecordingId, !isolationIsRunning else { return }
+        if !model.installed {
+            let agreed = Dialogs.confirm(
+                title: "Download “\(model.name)”?",
+                message: "VocalScope needs to download this model (\(Format.fileSize(model.sizeBytes))) once before it can isolate vocals. It comes from \(model.source). Licence: \(model.license).\n\nThis is the only time VocalScope uses the internet; your audio never leaves this Mac.",
+                action: "Download")
+            guard agreed else { return }
+        }
+        attempt { self.apply(isolation: try self.core.isolateVocals(recordingId: id, modelId: model.id)) }
+    }
+
+    func cancelIsolation() {
+        core.cancelIsolation()
+    }
+
+    func setListeningToVocals(_ listening: Bool) {
+        let core = self.core
+        playbackQueue.async {
+            do {
+                let session = try core.setListeningToVocals(listening: listening)
+                Task { @MainActor in AppModel.shared.apply(session: session) }
+            } catch {
+                Task { @MainActor in Dialogs.present(error: error) }
+            }
+        }
+    }
+
+    func removeVocals() {
+        guard let id = session.activeRecordingId else { return }
+        guard Dialogs.confirm(
+            title: "Remove the isolated vocals?",
+            message: "They can be made again at any time, which takes as long as it did the first time.",
+            action: "Remove")
+        else { return }
+        invalidateAnalysis()
+        attempt { self.apply(session: try self.core.removeVocalStem(recordingId: id)) }
+    }
+
+    func removeModel(_ model: SeparationModel) {
+        attempt {
+            try self.core.removeSeparationModel(modelId: model.id)
+            self.models = self.core.separationModels()
+        }
+    }
+
+    // MARK: - Comparison
+
+    func addRecordingPanel() {
+        guard hasProject else { return }
+        let types = supportedAudioExtensions().compactMap { UTType(filenameExtension: $0) }
+        guard let url = Dialogs.chooseFile(title: "Add a Recording to Compare", types: types + [.audio]) else { return }
+        let path = url.path
+        inBackground({ try $0.addRecording(path: path) }, then: { [weak self] in
+            self?.apply(session: $0)
+            self?.inspectorTab = .compare
+            self?.inspectorShown = true
+        })
+    }
+
+    func removeRecording(_ recording: Recording) {
+        invalidateAnalysis()
+        attempt { self.apply(session: try self.core.removeRecording(recordingId: recording.id)) }
+    }
+
+    /// Shows and plays the other recording of a compared pair, from the
+    /// matching moment.
+    func switchRecording() {
+        guard let other = otherRecording else { return }
+        setActiveRecording(other.id)
+    }
+
+    func setActiveRecording(_ id: Uuid) {
+        guard id != session.activeRecordingId else { return }
+        // Keep looking at the same music: carry the visible range across.
+        if let active = session.activeRecordingId, let timeline {
+            timeline.pendingView = mappedView(timeline.timeView, from: active, to: id)
+        }
+        invalidateAnalysis()
+        let core = self.core
+        playbackQueue.async {
+            do {
+                let session = try core.setActiveRecording(recordingId: id)
+                Task { @MainActor in AppModel.shared.apply(session: session) }
+            } catch {
+                Task { @MainActor in Dialogs.present(error: error) }
+            }
+        }
+    }
+
+    private func mappedView(_ view: TimeView, from: Uuid, to: Uuid) -> TimeView? {
+        guard let start = core.mapTime(fromRecordingId: from, toRecordingId: to, seconds: view.start),
+              let end = core.mapTime(fromRecordingId: from, toRecordingId: to, seconds: view.start + view.span)
+        else { return nil }
+        return TimeView(start: start, span: end - start)
     }
 
     // MARK: - Playback

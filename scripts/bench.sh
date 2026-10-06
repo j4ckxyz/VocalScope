@@ -11,8 +11,9 @@
 #
 # What is measured
 #   1. Core: decode + waveform speed and peak memory per file format.
-#   2. App launch: time from process creation to the window appearing, and
-#      to a file's waveform being on screen (first open, then cached).
+#   2. App launch: time from process creation to the window appearing, to a
+#      file's waveform being on screen and to its pitch being on screen
+#      (first open, then cached).
 #   3. App at rest: memory footprint and CPU with a file open, idle and
 #      (silently, muted) playing.
 #
@@ -66,34 +67,37 @@ for file in "$AUDIO"/synthetic-vocal-4min.{wav,flac,mp3,m4a} "$LONG"; do
 done
 echo
 
-# Launches the app in benchmark mode; prints "<window ms> <waveform ms> <peak footprint bytes>".
+# Launches the app in benchmark mode; prints
+# "<window ms> <waveform ms> <pitch ms> <peak footprint bytes>".
 launch() {
   local out
   out="$( { VOCALSCOPE_BENCH=1 VOCALSCOPE_BENCH_EXIT=1 /usr/bin/time -l "$BIN" "$@"; } 2>&1 )"
-  local window waveform peak
+  local window waveform pitch peak
   window="$(echo "$out" | awk '$1=="bench" && $2=="window" {print $3}')"
   waveform="$(echo "$out" | awk '$1=="bench" && $2=="waveform" {print $3}')"
+  pitch="$(echo "$out" | awk '$1=="bench" && $2=="analysis" {print $3}')"
   peak="$(echo "$out" | awk '/peak memory footprint/ {print $1}')"
-  echo "${window:-0} ${waveform:-0} ${peak:-0}"
+  echo "${window:-0} ${waveform:-0} ${pitch:-0} ${peak:-0}"
 }
 
 scenario() {
   local label="$1"; shift
   local clear_cache="$1"; shift
-  local windows=() waveforms=() peaks=()
+  local windows=() waveforms=() pitches=() peaks=()
   for _ in $(seq 1 "$RUNS"); do
     [[ "$clear_cache" == yes ]] && rm -rf "$VOCALSCOPE_DATA_ROOT/cache"
-    read -r w f p <<<"$(launch "$@")"
-    windows+=("$w"); waveforms+=("$f"); peaks+=("$p")
+    read -r w f a p <<<"$(launch "$@")"
+    windows+=("$w"); waveforms+=("$f"); pitches+=("$a"); peaks+=("$p")
   done
-  local w f p
+  local w f a p
   w="$(printf '%s\n' "${windows[@]}" | median)"
   f="$(printf '%s\n' "${waveforms[@]}" | median)"
+  a="$(printf '%s\n' "${pitches[@]}" | median)"
   p="$(printf '%s\n' "${peaks[@]}" | median | mb)"
   if [[ $# -eq 0 ]]; then
-    printf '  %-34s window %6s ms                        peak memory %6s MB\n' "$label" "$w" "$p"
+    printf '  %-24s window %6s ms                                          peak memory %6s MB\n' "$label" "$w" "$p"
   else
-    printf '  %-34s window %6s ms   waveform %7s ms   peak memory %6s MB\n' "$label" "$w" "$f" "$p"
+    printf '  %-24s window %6s ms   waveform %7s ms   pitch %7s ms   peak memory %6s MB\n' "$label" "$w" "$f" "$a" "$p"
   fi
 }
 

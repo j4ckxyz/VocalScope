@@ -19,10 +19,13 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L", "\(Context.packageDirectory)/.corelib"]),
                 .linkedLibrary("vocalscope_core"),
+                // ONNX Runtime, linked into the core, is C++.
+                .linkedLibrary("c++"),
                 .linkedLibrary("iconv"),
                 .linkedFramework("AudioToolbox"),
                 .linkedFramework("CoreAudio"),
                 .linkedFramework("CoreFoundation"),
+                .linkedFramework("Foundation"),
                 .linkedFramework("IOKit"),
             ]
         ),

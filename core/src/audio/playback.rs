@@ -55,6 +55,7 @@ pub struct OutputDevice {
 #[derive(Debug)]
 enum Op {
     Load(PathBuf, Option<f64>),
+    Switch(PathBuf, Option<f64>, f64),
     Unload,
     Play,
     Pause,
@@ -131,6 +132,18 @@ impl PlaybackHandle {
     /// read its duration.
     pub fn load(&self, path: &Path, known_duration: Option<f64>) -> AppResult<PlaybackStatus> {
         self.request(Op::Load(path.to_path_buf(), known_duration))
+    }
+
+    /// Replaces the current track with another one that is to be heard in
+    /// its place — the other version in an A/B comparison, or a recording's
+    /// isolated vocals — at `position`, carrying on playing if it was.
+    pub fn switch_track(
+        &self,
+        path: &Path,
+        known_duration: Option<f64>,
+        position: f64,
+    ) -> AppResult<PlaybackStatus> {
+        self.request(Op::Switch(path.to_path_buf(), known_duration, position))
     }
 
     pub fn unload(&self) -> AppResult<PlaybackStatus> {
@@ -268,6 +281,31 @@ impl Engine {
                         .map(|d| d.as_secs_f64()),
                 };
                 self.track = Some(path);
+                Ok(())
+            }
+            Op::Switch(path, known_duration, position) => {
+                let resume = self.state == TransportState::Playing;
+                let duration = match known_duration {
+                    Some(duration) => Some(duration),
+                    None => open_decoder(&path)?
+                        .total_duration()
+                        .map(|d| d.as_secs_f64()),
+                };
+                self.player = None;
+                self.track = Some(path);
+                self.duration = duration;
+                let position = if position.is_finite() {
+                    position.max(0.0)
+                } else {
+                    0.0
+                };
+                self.position = duration.map_or(position, |d| position.min(d));
+                if resume {
+                    // If the new track cannot be played, the transport is
+                    // left paused at the same place rather than stopped.
+                    self.state = TransportState::Paused;
+                    self.play()?;
+                }
                 Ok(())
             }
             Op::Unload => {
@@ -616,6 +654,34 @@ mod tests {
         assert_eq!(playback.set_volume(-1.0).unwrap().volume, 0.0);
         assert!(playback.set_muted(true).unwrap().muted);
         assert!(!playback.set_muted(false).unwrap().muted);
+    }
+
+    #[test]
+    fn switching_tracks_keeps_the_place_and_the_transport_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("a.wav");
+        let second = dir.path().join("b.wav");
+        write_sine_wav(&first, 44_100, 4.0, 0.2, &[440.0]);
+        write_sine_wav(&second, 44_100, 3.0, 0.2, &[660.0]);
+
+        let playback = handle();
+        playback.load(&first, None).unwrap();
+        playback.seek(1.5).unwrap();
+        let status = playback.switch_track(&second, None, 2.0).unwrap();
+        assert!(status.has_track);
+        assert_eq!(status.state, TransportState::Stopped);
+        assert_eq!(status.position_seconds, 2.0);
+        assert!((status.duration_seconds.unwrap() - 3.0).abs() < 0.01);
+
+        // Positions beyond the new track are clamped; nonsense becomes zero.
+        let status = playback.switch_track(&first, Some(4.0), 9.0).unwrap();
+        assert_eq!(status.position_seconds, 4.0);
+        let status = playback.switch_track(&first, Some(4.0), f64::NAN).unwrap();
+        assert_eq!(status.position_seconds, 0.0);
+
+        let missing = playback.switch_track(&dir.path().join("no.wav"), None, 0.0);
+        assert!(matches!(missing.unwrap_err(), AppError::FileNotFound(_)));
+        assert!(playback.status().has_track, "the old track stays loaded");
     }
 
     #[test]

@@ -4,9 +4,8 @@
 //! migration: every field has a default, and unknown or missing fields are
 //! tolerated when an older or newer build reads the same database.
 //!
-//! Only settings that do something today are defined here. Sections for
-//! features that have not shipped yet (analysis, vocal separation, updates)
-//! are added together with those features.
+//! Only settings that do something are defined here; a section is added
+//! together with the feature that needs it.
 
 use std::path::PathBuf;
 
